@@ -23,11 +23,7 @@ PlaneAge is a lightweight aviation tool. It calculates aircraft age by joining r
 
 ## 4. Data Schema: Local FAA `master.csv`
 - **Path:** `./data/master.csv`
-- **Columns (0-indexed):**
-    - `[0]`: N-Number (e.g., "12345")
-    - `[4]`: Year Mfr (e.g., "2015")
-    - `[20]`: Manufacturer (e.g., "BOEING")
-    - `[21]`: Model (e.g., "737-800")
+- **Aircraft Reference:** `./data/acftref.csv`
 
 ## 5. Implementation Rules
 1. **Zero-RAM Lookup:** Use `readline` to stop reading the CSV the moment a match is found.
@@ -35,14 +31,22 @@ PlaneAge is a lightweight aviation tool. It calculates aircraft age by joining r
     - If tail number isn't in FAA local cache: "Aircraft specs not in local registry."
 3. **UI:** Results must be "Glanceable." Big numbers, high contrast.
 
-## 6. Data Automation: FAA Weekly Refresh
+## 6. Accessibility (Lightweight Target)
+PlaneAge is a simple app; meet basic accessibility essentials without over-engineering:
+- **Keyboard:** All controls usable with keyboard only; visible focus state.
+- **Forms:** Every input has a programmatic label (`<label for>` or `aria-label`).
+- **Updates:** Results/errors are announced for screen readers (e.g., `role="status"` / `aria-live`).
+- **Contrast:** Keep text high-contrast (aim for WCAG AA contrast where practical).
+
+## 7. Data Automation: FAA Weekly Refresh
 - **Source URL:** `https://registry.faa.gov/database/ReleasableAircraft.zip`
 - **Process (scripts/refresh-faa.js):**
     1. Download ZIP to `/data/temp.zip`.
-    2. Extract `MASTER.txt` from the ZIP.
+    2. Extract `MASTER.txt` and `ACFTREF.txt` from the ZIP.
     3. Perform an "Atomic Swap":
         - Rename current `master.csv` to `master.old`.
         - Rename extracted `MASTER.txt` to `master.csv`.
         - Delete `master.old` and `temp.zip` upon success.
+        - Repeat for `ACFTREF.txt`.
 - **Dependencies:** Use `adm-zip` for extraction and native `https` for downloads to stay minimalist.
 - **Execution:** Triggered via `npm run refresh` (mapped to `node scripts/refresh-faa.js`).

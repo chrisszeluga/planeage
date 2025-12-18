@@ -19,7 +19,7 @@
       </div>
     </header>
 
-    <main class="main">
+    <main class="main" id="main">
       <section class="view" id="viewSearch">
         <h1 class="title">Aircraft Age Lookup</h1>
         <p class="subtitle">Enter your flight details to see how old your plane is.</p>
@@ -48,7 +48,7 @@
             </div>
           </div>
 
-          <p class="error" id="error" role="alert" aria-live="polite" hidden></p>
+          <p class="error" id="error" role="alert" aria-live="polite" tabindex="-1" hidden></p>
 
           <button class="button" id="submit" type="submit">
             <span class="spinner" id="spinner" aria-hidden="true" hidden></span>
@@ -59,8 +59,9 @@
         
       </section>
 
-      <section class="view view--result" id="viewResult" hidden>
-        <p class="resultLabel">Aircraft Age</p>
+      <section class="view view--result" id="viewResult" aria-labelledby="resultHeading" hidden>
+        <h2 class="resultLabel" id="resultHeading" tabindex="-1">Aircraft Age</h2>
+        <p class="sr-only" id="resultStatus" role="status" aria-live="polite"></p>
 
         <div class="flaps" aria-label="Aircraft age in years">
           <div class="flaps__digits" id="flaps" aria-hidden="true">

@@ -4,6 +4,8 @@
   const form = $id('form');
   const viewSearch = $id('viewSearch');
   const viewResult = $id('viewResult');
+  const resultHeading = $id('resultHeading');
+  const resultStatus = $id('resultStatus');
 
   const flightInput = $id('flightNumber');
   const dateInput = $id('date');
@@ -57,12 +59,14 @@
     }
     errorEl.textContent = message;
     setHidden(errorEl, false);
+    errorEl.focus({ preventScroll: true });
   }
 
   function setLoading(isLoading) {
     submitBtn.disabled = isLoading;
     flightInput.disabled = isLoading;
     dateInput.disabled = isLoading;
+    form.setAttribute('aria-busy', isLoading ? 'true' : 'false');
 
     setHidden(spinner, !isLoading);
     buttonText.textContent = isLoading ? 'Looking up…' : ORIGINAL_BUTTON_TEXT;
@@ -80,6 +84,15 @@
   function showResult() {
     setHidden(viewSearch, true);
     setHidden(viewResult, false);
+    resultHeading?.focus({ preventScroll: true });
+  }
+
+  function announceResult(message) {
+    if (!resultStatus) return;
+    resultStatus.textContent = '';
+    requestAnimationFrame(() => {
+      resultStatus.textContent = message || '';
+    });
   }
 
   function conditionForAge(age) {
@@ -198,8 +211,17 @@
       mfrYear.textContent = year;
       tail.textContent = reg;
 
+      const resultParts = [
+        `Aircraft age: ${age} year${age === 1 ? '' : 's'}.`,
+        type && type !== '—' ? `Aircraft: ${type}.` : null,
+        year && year !== '—' ? `Built: ${year}.` : null,
+        reg && reg !== '—' ? `Registration: ${reg}.` : null,
+        cond?.text ? `Condition: ${cond.text}.` : null,
+      ].filter(Boolean);
+
       renderFlaps(age);
       showResult();
+      announceResult(resultParts.join(' '));
     } catch {
       setError(ERR_UNAVAILABLE);
     } finally {
