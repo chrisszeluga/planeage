@@ -8,13 +8,15 @@
     "start": "node server.js",
     "test": "node --test",
     "verify": "node --expose-gc scripts/verify.js",
-    "verify:full": "node --expose-gc scripts/verify.js --full-scan"
+    "verify:full": "node --expose-gc scripts/verify.js --full-scan",
+    "deploy:gcp": "cloud/deploy.sh"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@google-cloud/storage": "^7.18.0",
     "adm-zip": "^0.5.16",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",

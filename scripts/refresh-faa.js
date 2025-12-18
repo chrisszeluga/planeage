@@ -7,14 +7,36 @@ const AdmZip = require('adm-zip');
 
 const FAA_ZIP_URL = 'https://registry.faa.gov/database/ReleasableAircraft.zip';
 
-const dataDir = path.join(__dirname, '..', 'data');
-const zipPath = path.join(dataDir, 'temp.zip');
-const extractedMasterPath = path.join(dataDir, 'MASTER.txt');
-const extractedAcftRefPath = path.join(dataDir, 'ACFTREF.txt');
-const masterPath = path.join(dataDir, 'master.csv');
-const acftRefPath = path.join(dataDir, 'acftref.csv');
-const oldMasterPath = path.join(dataDir, 'master.old');
-const oldAcftRefPath = path.join(dataDir, 'acftref.old');
+function dataDir() {
+  const raw = String(process.env.FAA_DATA_DIR || '').trim();
+  return raw ? path.resolve(raw) : path.join(__dirname, '..', 'data');
+}
+
+function normalizeGcsObjectName(value) {
+  const raw = String(value || '').trim();
+  const stripped = raw.replace(/^\/+/, '');
+  return stripped.replace(/\/+$/, '');
+}
+
+const GCS_BUCKET = String(process.env.GCS_BUCKET || '').trim();
+const GCS_PREFIX = normalizeGcsObjectName(process.env.GCS_PREFIX || 'faa');
+const GCS_MANIFEST_OBJECT =
+  normalizeGcsObjectName(process.env.GCS_MANIFEST_OBJECT) ||
+  (GCS_PREFIX ? `${GCS_PREFIX}/current.json` : 'current.json');
+
+function paths() {
+  const dir = dataDir();
+  return {
+    dataDir: dir,
+    zipPath: path.join(dir, 'temp.zip'),
+    extractedMasterPath: path.join(dir, 'MASTER.txt'),
+    extractedAcftRefPath: path.join(dir, 'ACFTREF.txt'),
+    masterPath: path.join(dir, 'master.csv'),
+    acftRefPath: path.join(dir, 'acftref.csv'),
+    oldMasterPath: path.join(dir, 'master.old'),
+    oldAcftRefPath: path.join(dir, 'acftref.old'),
+  };
+}
 
 function envPositiveMs(raw, fallback) {
   const n = Number(raw);
@@ -93,64 +115,122 @@ async function extractTxtFromZip(zipFilePath, suffixLower, destPath) {
 
   if (!entry) throw new Error(`${suffixLower} not found in zip`);
 
+  const destDir = path.dirname(destPath);
   await fsp.rm(destPath, { force: true });
-  zip.extractEntryTo(entry.entryName, dataDir, false, true);
+  zip.extractEntryTo(entry.entryName, destDir, false, true);
 
   if (!(await pathExists(destPath))) {
     throw new Error(`Extraction failed (${suffixLower} missing after extract)`);
   }
 }
 
-async function atomicSwap() {
-  const hasMaster = await pathExists(masterPath);
-  const hasAcftRef = await pathExists(acftRefPath);
+async function atomicSwap(p) {
+  const hasMaster = await pathExists(p.masterPath);
+  const hasAcftRef = await pathExists(p.acftRefPath);
 
   try {
-    if (hasMaster) await fsp.rename(masterPath, oldMasterPath);
-    if (hasAcftRef) await fsp.rename(acftRefPath, oldAcftRefPath);
+    if (hasMaster) await fsp.rename(p.masterPath, p.oldMasterPath);
+    if (hasAcftRef) await fsp.rename(p.acftRefPath, p.oldAcftRefPath);
 
-    await fsp.rename(extractedMasterPath, masterPath);
-    await fsp.rename(extractedAcftRefPath, acftRefPath);
+    await fsp.rename(p.extractedMasterPath, p.masterPath);
+    await fsp.rename(p.extractedAcftRefPath, p.acftRefPath);
   } catch (err) {
-    if (hasMaster && (await pathExists(oldMasterPath)) && !(await pathExists(masterPath))) {
-      try { await fsp.rename(oldMasterPath, masterPath); } catch {}
+    if (hasMaster && (await pathExists(p.oldMasterPath)) && !(await pathExists(p.masterPath))) {
+      try { await fsp.rename(p.oldMasterPath, p.masterPath); } catch {}
     }
-    if (hasAcftRef && (await pathExists(oldAcftRefPath)) && !(await pathExists(acftRefPath))) {
-      try { await fsp.rename(oldAcftRefPath, acftRefPath); } catch {}
+    if (hasAcftRef && (await pathExists(p.oldAcftRefPath)) && !(await pathExists(p.acftRefPath))) {
+      try { await fsp.rename(p.oldAcftRefPath, p.acftRefPath); } catch {}
     }
     throw err;
   }
 
-  if (hasMaster) await fsp.rm(oldMasterPath, { force: true });
-  if (hasAcftRef) await fsp.rm(oldAcftRefPath, { force: true });
-  await fsp.rm(zipPath, { force: true });
+  if (hasMaster) await fsp.rm(p.oldMasterPath, { force: true });
+  if (hasAcftRef) await fsp.rm(p.oldAcftRefPath, { force: true });
+  await fsp.rm(p.zipPath, { force: true });
 }
 
-async function cleanupTemps() {
-  await fsp.rm(extractedMasterPath, { force: true });
-  await fsp.rm(extractedAcftRefPath, { force: true });
-  await fsp.rm(zipPath, { force: true });
+async function cleanupTemps(p) {
+  await fsp.rm(p.extractedMasterPath, { force: true });
+  await fsp.rm(p.extractedAcftRefPath, { force: true });
+  await fsp.rm(p.zipPath, { force: true });
+}
+
+function objectInPrefix(prefix, objectName) {
+  const cleanPrefix = normalizeGcsObjectName(prefix);
+  const cleanObject = normalizeGcsObjectName(objectName);
+  if (!cleanPrefix) return cleanObject;
+  if (!cleanObject) return cleanPrefix;
+  return `${cleanPrefix}/${cleanObject}`;
+}
+
+function refreshStamp() {
+  return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+}
+
+async function uploadFileToGcs(bucket, localPath, objectName) {
+  const file = bucket.file(objectName);
+  await pipeline(
+    fs.createReadStream(localPath),
+    file.createWriteStream({
+      resumable: true,
+      metadata: { contentType: 'text/plain; charset=utf-8' },
+    })
+  );
+}
+
+async function uploadManifest(bucket, objectName, payload) {
+  const body = JSON.stringify(payload, null, 2) + '\n';
+  await bucket.file(objectName).save(body, {
+    resumable: false,
+    contentType: 'application/json; charset=utf-8',
+  });
+}
+
+async function uploadToGcsIfConfigured(p) {
+  if (!GCS_BUCKET) return;
+  const { Storage } = require('@google-cloud/storage');
+  const storage = new Storage();
+  const bucket = storage.bucket(GCS_BUCKET);
+
+  const stamp = refreshStamp();
+  const masterObject = objectInPrefix(GCS_PREFIX, `master-${stamp}.csv`);
+  const acftRefObject = objectInPrefix(GCS_PREFIX, `acftref-${stamp}.csv`);
+
+  console.log(`Uploading to gs://${GCS_BUCKET}/${GCS_PREFIX || ''}...`);
+  await uploadFileToGcs(bucket, p.masterPath, masterObject);
+  await uploadFileToGcs(bucket, p.acftRefPath, acftRefObject);
+
+  await uploadManifest(bucket, GCS_MANIFEST_OBJECT, {
+    updatedAt: new Date().toISOString(),
+    master: masterObject,
+    acftref: acftRefObject,
+  });
+
+  console.log(`Updated manifest: gs://${GCS_BUCKET}/${GCS_MANIFEST_OBJECT}`);
 }
 
 async function main() {
-  await fsp.mkdir(dataDir, { recursive: true });
+  const p = paths();
+  await fsp.mkdir(p.dataDir, { recursive: true });
 
   try {
     console.log('Downloading FAA registry zip...');
-    await downloadToFile(FAA_ZIP_URL, zipPath);
+    await downloadToFile(FAA_ZIP_URL, p.zipPath);
 
     console.log('Extracting MASTER.txt...');
-    await extractTxtFromZip(zipPath, 'master.txt', extractedMasterPath);
+    await extractTxtFromZip(p.zipPath, 'master.txt', p.extractedMasterPath);
 
     console.log('Extracting ACFTREF.txt...');
-    await extractTxtFromZip(zipPath, 'acftref.txt', extractedAcftRefPath);
+    await extractTxtFromZip(p.zipPath, 'acftref.txt', p.extractedAcftRefPath);
 
     console.log('Swapping in new data files...');
-    await atomicSwap();
+    await atomicSwap(p);
+
+    await uploadToGcsIfConfigured(p);
 
     console.log('Done.');
   } catch (err) {
-    await cleanupTemps();
+    await cleanupTemps(p);
     throw err;
   }
 }

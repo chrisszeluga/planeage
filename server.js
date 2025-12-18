@@ -27,6 +27,12 @@ const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const RAPIDAPI_HOST = 'aerodatabox.p.rapidapi.com';
 const RAPIDAPI_TIMEOUT_MS = Number(process.env.RAPIDAPI_TIMEOUT_MS || 10000);
 const TRUST_PROXY = process.env.TRUST_PROXY;
+const FAA_DATA_BACKEND = String(process.env.FAA_DATA_BACKEND || '').trim().toLowerCase();
+const GCS_BUCKET = String(process.env.GCS_BUCKET || '').trim();
+const GCS_MASTER_OBJECT = String(process.env.GCS_MASTER_OBJECT || '').trim();
+const GCS_ACFTREF_OBJECT = String(process.env.GCS_ACFTREF_OBJECT || '').trim();
+const GCS_MANIFEST_OBJECT = String(process.env.GCS_MANIFEST_OBJECT || '').trim() || 'faa/current.json';
+const GCS_MANIFEST_CACHE_MS = envPositiveInt(process.env.GCS_MANIFEST_CACHE_MS, 60 * 1000);
 
 // Fixed FAA file formats (per project assumptions):
 // MASTER.txt header begins with: N-NUMBER,SERIAL NUMBER,MFR MDL CODE,...,YEAR MFR,...,KIT MFR, KIT MODEL,...
@@ -51,8 +57,13 @@ const CSV_READ_HIGH_WATER_MARK = envPositiveInt(
   256 * 1024
 );
 
-const masterCsvPath = path.join(__dirname, 'data', 'master.csv');
-const acftRefCsvPath = path.join(__dirname, 'data', 'acftref.csv');
+function localDataDir() {
+  const raw = String(process.env.FAA_DATA_DIR || '').trim();
+  return raw ? path.resolve(raw) : path.join(__dirname, 'data');
+}
+
+const masterCsvPath = path.join(localDataDir(), 'master.csv');
+const acftRefCsvPath = path.join(localDataDir(), 'acftref.csv');
 
 const MSG_INVALID_INPUT = 'Invalid input.';
 const MSG_SERVER_ERROR = 'Server error.';
@@ -217,15 +228,157 @@ function parseCsvFieldsAt(line, wanted) {
   return out;
 }
 
-function findAircraftInMasterCsv(nNumber, csvPath = masterCsvPath) {
+let cachedGcsStorage = null;
+function getGcsStorage() {
+  if (cachedGcsStorage) return cachedGcsStorage;
+  const { Storage } = require('@google-cloud/storage');
+  cachedGcsStorage = new Storage();
+  return cachedGcsStorage;
+}
+
+function normalizeGcsObjectName(value) {
+  const raw = String(value || '').trim();
+  return raw.replace(/^\/+/, '');
+}
+
+function isProbablyMissingDataError(err) {
+  if (!err) return false;
+  if (err.code === 'ENOENT') return true;
+  if (err.code === 404 || err.statusCode === 404) return true;
+  if (String(err.message || '').toLowerCase().includes('no such object')) return true;
+  return false;
+}
+
+function isIgnorableEarlyCloseError(err) {
+  if (!err) return false;
+  return (
+    err.code === 'ERR_STREAM_PREMATURE_CLOSE' ||
+    err.code === 'ECONNRESET' ||
+    String(err.message || '').toLowerCase().includes('premature close')
+  );
+}
+
+function coerceCsvSource(value, defaultPath) {
+  if (value && typeof value.createReadStream === 'function') return value;
+  if (typeof value === 'function') return { createReadStream: value, id: 'custom-stream' };
+
+  const csvPath = typeof value === 'string' ? value : defaultPath;
+  return {
+    id: csvPath,
+    createReadStream: () =>
+      fs.createReadStream(csvPath, {
+        encoding: 'utf8',
+        highWaterMark: CSV_READ_HIGH_WATER_MARK,
+      }),
+  };
+}
+
+let cachedManifest = null;
+let cachedManifestAt = 0;
+
+async function readGcsManifest() {
+  const bucketName = GCS_BUCKET;
+  if (!bucketName) return null;
+
+  const now = Date.now();
+  if (cachedManifest && now - cachedManifestAt < GCS_MANIFEST_CACHE_MS) return cachedManifest;
+
+  const storage = getGcsStorage();
+  const bucket = storage.bucket(bucketName);
+  const manifestObject = normalizeGcsObjectName(GCS_MANIFEST_OBJECT);
+
+  let buf;
+  try {
+    [buf] = await bucket.file(manifestObject).download();
+  } catch (err) {
+    if (isProbablyMissingDataError(err)) return null;
+    throw err;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(String(buf || ''));
+  } catch {
+    parsed = null;
+  }
+
+  const master = normalizeGcsObjectName(parsed && parsed.master);
+  const acftref = normalizeGcsObjectName(parsed && (parsed.acftref || parsed.acftRef));
+  if (!master || !acftref) return null;
+
+  cachedManifest = { master, acftref };
+  cachedManifestAt = now;
+  return cachedManifest;
+}
+
+async function defaultFaaCsvSources() {
+  const backendRequested = FAA_DATA_BACKEND;
+  const backend = backendRequested || (GCS_BUCKET ? 'gcs' : 'local');
+  if (backend !== 'gcs') {
+    return {
+      master: coerceCsvSource(masterCsvPath, masterCsvPath),
+      acftRef: coerceCsvSource(acftRefCsvPath, acftRefCsvPath),
+    };
+  }
+
+  if (!GCS_BUCKET) {
+    if (backendRequested === 'gcs') {
+      throw new Error('GCS_BUCKET is required when FAA_DATA_BACKEND=gcs');
+    }
+    return {
+      master: coerceCsvSource(masterCsvPath, masterCsvPath),
+      acftRef: coerceCsvSource(acftRefCsvPath, acftRefCsvPath),
+    };
+  }
+
+  const storage = getGcsStorage();
+  const bucket = storage.bucket(GCS_BUCKET);
+
+  let masterObject = normalizeGcsObjectName(GCS_MASTER_OBJECT);
+  let acftRefObject = normalizeGcsObjectName(GCS_ACFTREF_OBJECT);
+
+  if (!masterObject || !acftRefObject) {
+    const manifest = await readGcsManifest();
+    masterObject = masterObject || (manifest && manifest.master);
+    acftRefObject = acftRefObject || (manifest && manifest.acftref);
+  }
+
+  if (!masterObject || !acftRefObject) {
+    if (backendRequested === 'gcs') {
+      throw new Error(
+        'GCS_MANIFEST_OBJECT (or both GCS_MASTER_OBJECT and GCS_ACFTREF_OBJECT) is required when FAA_DATA_BACKEND=gcs'
+      );
+    }
+    return {
+      master: coerceCsvSource(masterCsvPath, masterCsvPath),
+      acftRef: coerceCsvSource(acftRefCsvPath, acftRefCsvPath),
+    };
+  }
+
+  const makeGcsSource = (objectName) => ({
+    id: `gs://${GCS_BUCKET}/${objectName}`,
+    createReadStream: () => {
+      const stream = bucket.file(objectName).createReadStream({
+        highWaterMark: CSV_READ_HIGH_WATER_MARK,
+      });
+      stream.setEncoding('utf8');
+      return stream;
+    },
+  });
+
+  return {
+    master: makeGcsSource(masterObject),
+    acftRef: makeGcsSource(acftRefObject),
+  };
+}
+
+function findAircraftInMasterCsv(nNumber, csvPathOrSource = masterCsvPath) {
   return new Promise((resolve, reject) => {
     const needle = String(nNumber || '').trim().toUpperCase();
     if (!needle) return resolve(null);
 
-    const stream = fs.createReadStream(csvPath, {
-      encoding: 'utf8',
-      highWaterMark: CSV_READ_HIGH_WATER_MARK,
-    });
+    const source = coerceCsvSource(csvPathOrSource, masterCsvPath);
+    const stream = source.createReadStream();
 
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
     let settled = false;
@@ -242,7 +395,8 @@ function findAircraftInMasterCsv(nNumber, csvPath = masterCsvPath) {
       if (settled) return;
       settled = true;
       if (err) {
-        if (err && err.code === 'ENOENT') return resolve(null);
+        if (found && isIgnorableEarlyCloseError(err)) return resolve(found);
+        if (isProbablyMissingDataError(err)) return resolve(null);
         reject(err);
       }
       else resolve(found);
@@ -280,15 +434,13 @@ function findAircraftInMasterCsv(nNumber, csvPath = masterCsvPath) {
   });
 }
 
-function findAircraftInAcftRef(mfrMdlCode, csvPath = acftRefCsvPath) {
+function findAircraftInAcftRef(mfrMdlCode, csvPathOrSource = acftRefCsvPath) {
   return new Promise((resolve, reject) => {
     const needle = String(mfrMdlCode || '').trim().toUpperCase();
     if (!needle) return resolve(null);
 
-    const stream = fs.createReadStream(csvPath, {
-      encoding: 'utf8',
-      highWaterMark: CSV_READ_HIGH_WATER_MARK,
-    });
+    const source = coerceCsvSource(csvPathOrSource, acftRefCsvPath);
+    const stream = source.createReadStream();
 
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
     let settled = false;
@@ -300,7 +452,8 @@ function findAircraftInAcftRef(mfrMdlCode, csvPath = acftRefCsvPath) {
       if (settled) return;
       settled = true;
       if (err) {
-        if (err && err.code === 'ENOENT') return resolve(null);
+        if (found && isIgnorableEarlyCloseError(err)) return resolve(found);
+        if (isProbablyMissingDataError(err)) return resolve(null);
         reject(err);
       } else resolve(found);
     }
@@ -339,9 +492,13 @@ function findAircraftInAcftRef(mfrMdlCode, csvPath = acftRefCsvPath) {
 
 async function resolveAircraftSpecsByNNumber(
   nNumber,
-  { masterPath = masterCsvPath, acftRefPath = acftRefCsvPath } = {}
+  { masterPath = null, acftRefPath = null } = {}
 ) {
-  const aircraft = await findAircraftInMasterCsv(nNumber, masterPath);
+  const defaults = await defaultFaaCsvSources();
+  const masterSource = masterPath || defaults.master;
+  const acftRefSource = acftRefPath || defaults.acftRef;
+
+  const aircraft = await findAircraftInMasterCsv(nNumber, masterSource);
   if (!aircraft) return null;
 
   let manufacturer = '';
@@ -350,7 +507,7 @@ async function resolveAircraftSpecsByNNumber(
 
   const hasCode = String(aircraft.mfrMdlCode || '').trim();
   if (hasCode) {
-    const ref = await findAircraftInAcftRef(aircraft.mfrMdlCode, acftRefPath);
+    const ref = await findAircraftInAcftRef(aircraft.mfrMdlCode, acftRefSource);
     if (ref) {
       manufacturer = String(ref.manufacturer || '').trim();
       model = String(ref.model || '').trim();
