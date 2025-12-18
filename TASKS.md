@@ -44,7 +44,7 @@
 - [x] **Graceful Error Handling:** Ensure 500 errors do not leak stack traces or local file paths (like `/Users/name/planeage/data/...`) to the end user.
 
 ## Phase 7: Google Cloud Deployment (Buildpacks)
-- [ ] Ensure `package.json` has a `"start": "node server.js"` script.
-- [ ] Create `deploy.sh`: Use `gcloud run deploy --source .` (triggers Buildpacks).
-- [ ] Create `refresh-job.sh`: Use `gcloud run jobs deploy --source .` for the maintenance task.
-- [ ] Document the `gcloud scheduler` command to automate the weekly refresh.
+- [ ] We want to use native Google Cloud services. Cloud Storage to store our data. Cloud Run to run the refresh script. Cloud Scheduler to trigger the refresh script. Then a separate Cloud Run for the main web application. Reformat the repo to accomodate this, if needed. Locally, we still want to keep things so the app can run locally with local data as well.
+- [ ] Develop the needed deploy script for our app to automatically deploy to Google Cloud using Buildpacks. Make sure to account for any secrets.
+- [ ] Use the `gcloud` CLI to set up required Google Cloud resources to be ready for deployment.
+- [ ] Deploy the app to Google Cloud.
