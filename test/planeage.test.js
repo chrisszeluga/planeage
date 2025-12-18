@@ -43,12 +43,12 @@ test('CSV lookup finds by N-number (trimmed)', async () => {
   assert.equal(r2.kitModel, 'MODEL-X');
 });
 
-test('CSV lookup uses header names (KIT MFR / KIT MODEL fallback)', async () => {
-  const csvPath = path.join(__dirname, 'fixtures', 'master.kit.schema.csv');
-  const r = await findAircraftInMasterCsv('12345', csvPath);
-  assert.equal(r.year, '2010');
-  assert.equal(r.kitManufacturer, 'BEECHCRAFT');
-  assert.equal(r.kitModel, 'KING AIR 350');
+test('CSV lookup reads kit fields from MASTER', async () => {
+  const csvPath = path.join(__dirname, 'fixtures', 'master.real.header.csv');
+  const r = await findAircraftInMasterCsv('100', csvPath);
+  assert.equal(r.year, '1998');
+  assert.equal(r.kitManufacturer, 'KITCO');
+  assert.equal(r.kitModel, 'MODEL-X');
 });
 
 test('ACFTREF lookup returns aircraft type text', async () => {
@@ -60,7 +60,7 @@ test('ACFTREF lookup returns aircraft type text', async () => {
 });
 
 test('Resolve specs joins MASTER -> ACFTREF when MANUFACTURER/MODEL missing', async () => {
-  const masterPath = path.join(__dirname, 'fixtures', 'master.mfrmdl.only.csv');
+  const masterPath = path.join(__dirname, 'fixtures', 'master.real.header.csv');
   const acftRefPath = path.join(__dirname, 'fixtures', 'acftref.sample.csv');
   const r = await resolveAircraftSpecsByNNumber('123AB', { masterPath, acftRefPath });
   assert.equal(r.year, '2015');

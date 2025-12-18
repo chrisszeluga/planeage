@@ -26,6 +26,24 @@ const RAPIDAPI_HOST = 'aerodatabox.p.rapidapi.com';
 const RAPIDAPI_TIMEOUT_MS = Number(process.env.RAPIDAPI_TIMEOUT_MS || 10000);
 const TRUST_PROXY = process.env.TRUST_PROXY;
 
+// Fixed FAA file formats (per project assumptions):
+// MASTER.txt header begins with: N-NUMBER,SERIAL NUMBER,MFR MDL CODE,...,YEAR MFR,...,KIT MFR, KIT MODEL,...
+// ACFTREF.txt header begins with: CODE,MFR,MODEL,TYPE-ACFT,...
+const MASTER_COLS = {
+  N_NUMBER: 0,
+  MFR_MDL_CODE: 2,
+  YEAR_MFR: 4,
+  KIT_MFR: 31,
+  KIT_MODEL: 32,
+};
+
+const ACFTREF_COLS = {
+  CODE: 0,
+  MFR: 1,
+  MODEL: 2,
+  TYPE_ACFT: 3,
+};
+
 const CSV_READ_HIGH_WATER_MARK = envPositiveInt(
   process.env.CSV_READ_HIGH_WATER_MARK,
   256 * 1024
@@ -70,42 +88,6 @@ function normalizeNNumberFromRegistration(registration) {
 function extractRegistrationFromFlightResponse(data) {
   if (!Array.isArray(data) || data.length === 0) return null;
   return data?.[0]?.aircraft?.reg || data?.[0]?.aircraft?.registration || null;
-}
-
-function parseCsvLine(line) {
-  const out = [];
-  let field = '';
-  let inQuotes = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-
-    if (inQuotes) {
-      if (ch === '"') {
-        if (line[i + 1] === '"') {
-          field += '"';
-          i++;
-        } else {
-          inQuotes = false;
-        }
-      } else {
-        field += ch;
-      }
-      continue;
-    }
-
-    if (ch === '"') {
-      inQuotes = true;
-    } else if (ch === ',') {
-      out.push(field);
-      field = '';
-    } else {
-      field += ch;
-    }
-  }
-
-  out.push(field);
-  return out;
 }
 
 function stripLeadingBom(value) {
@@ -233,41 +215,6 @@ function parseCsvFieldsAt(line, wanted) {
   return out;
 }
 
-function normalizeHeaderName(value) {
-  return String(value || '')
-    .replace(/^\uFEFF/, '')
-    .trim()
-    .toUpperCase();
-}
-
-function inferMasterCsvSchemaFromHeaderLine(line) {
-  const cols = parseCsvLine(String(line || ''));
-  if (!cols || cols.length === 0) return null;
-
-  const indexByName = new Map();
-  for (let i = 0; i < cols.length; i++) {
-    const key = normalizeHeaderName(cols[i]);
-    if (!key) continue;
-    if (!indexByName.has(key)) indexByName.set(key, i);
-  }
-
-  const nNumberIdx = indexByName.get('N-NUMBER');
-  const yearIdx = indexByName.get('YEAR MFR');
-  const mfrMdlCodeIdx = indexByName.get('MFR MDL CODE') ?? null;
-  const kitManufacturerIdx = indexByName.get('KIT MFR') ?? null;
-  const kitModelIdx = indexByName.get('KIT MODEL') ?? null;
-
-  if (typeof nNumberIdx !== 'number' || typeof yearIdx !== 'number') return null;
-
-  return {
-    nNumberIdx,
-    yearIdx,
-    mfrMdlCodeIdx: typeof mfrMdlCodeIdx === 'number' ? mfrMdlCodeIdx : null,
-    kitManufacturerIdx: typeof kitManufacturerIdx === 'number' ? kitManufacturerIdx : null,
-    kitModelIdx: typeof kitModelIdx === 'number' ? kitModelIdx : null,
-  };
-}
-
 function findAircraftInMasterCsv(nNumber, csvPath = masterCsvPath) {
   return new Promise((resolve, reject) => {
     const needle = String(nNumber || '').trim().toUpperCase();
@@ -281,8 +228,13 @@ function findAircraftInMasterCsv(nNumber, csvPath = masterCsvPath) {
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
     let settled = false;
     let found = null;
-    let schema = null;
     let sawFirstLine = false;
+    const wanted = makeWantedCsvIndices([
+      MASTER_COLS.MFR_MDL_CODE,
+      MASTER_COLS.YEAR_MFR,
+      MASTER_COLS.KIT_MFR,
+      MASTER_COLS.KIT_MODEL,
+    ]);
 
     function done(err) {
       if (settled) return;
@@ -300,70 +252,21 @@ function findAircraftInMasterCsv(nNumber, csvPath = masterCsvPath) {
 
       if (!sawFirstLine) {
         sawFirstLine = true;
-        const headerSchema = inferMasterCsvSchemaFromHeaderLine(line);
-        schema = headerSchema || {
-          nNumberIdx: 0,
-          yearIdx: 4,
-          mfrMdlCodeIdx: 2,
-          kitManufacturerIdx: 31,
-          kitModelIdx: 32,
-        };
-
-        schema.wantedAll = makeWantedCsvIndices([
-          schema.nNumberIdx,
-          schema.yearIdx,
-          schema.mfrMdlCodeIdx,
-          schema.kitManufacturerIdx,
-          schema.kitModelIdx,
-        ]);
-        schema.wantedDetails = makeWantedCsvIndices([
-          schema.yearIdx,
-          schema.mfrMdlCodeIdx,
-          schema.kitManufacturerIdx,
-          schema.kitModelIdx,
-        ]);
-
-        if (headerSchema) return;
-      }
-
-      if (schema.nNumberIdx !== 0) {
-        const fields = parseCsvFieldsAt(line, schema.wantedAll);
-        const candidate = normalizeNNumberField(fields.get(schema.nNumberIdx));
-        if (candidate !== needle) return;
-
-        found = {
-          nNumber: needle,
-          year: String(fields.get(schema.yearIdx) || '').trim(),
-          mfrMdlCode:
-            schema.mfrMdlCodeIdx == null ? '' : String(fields.get(schema.mfrMdlCodeIdx) || '').trim(),
-          kitManufacturer:
-            schema.kitManufacturerIdx == null
-              ? ''
-              : String(fields.get(schema.kitManufacturerIdx) || '').trim(),
-          kitModel:
-            schema.kitModelIdx == null ? '' : String(fields.get(schema.kitModelIdx) || '').trim(),
-        };
-        rl.close();
-        stream.destroy();
         return;
       }
 
       const first = normalizeNNumberField(readFirstCsvField(line));
       if (first !== needle) return;
 
-      const fields = parseCsvFieldsAt(line, schema.wantedDetails);
+      const fields = parseCsvFieldsAt(line, wanted);
 
       found = {
         nNumber: needle,
-        year: String(fields.get(schema.yearIdx) || '').trim(),
-        mfrMdlCode:
-          schema.mfrMdlCodeIdx == null ? '' : String(fields.get(schema.mfrMdlCodeIdx) || '').trim(),
+        year: String(fields.get(MASTER_COLS.YEAR_MFR) || '').trim(),
+        mfrMdlCode: String(fields.get(MASTER_COLS.MFR_MDL_CODE) || '').trim(),
         kitManufacturer:
-          schema.kitManufacturerIdx == null
-            ? ''
-            : String(fields.get(schema.kitManufacturerIdx) || '').trim(),
-        kitModel:
-          schema.kitModelIdx == null ? '' : String(fields.get(schema.kitModelIdx) || '').trim(),
+          String(fields.get(MASTER_COLS.KIT_MFR) || '').trim(),
+        kitModel: String(fields.get(MASTER_COLS.KIT_MODEL) || '').trim(),
       };
       rl.close();
       stream.destroy();
@@ -373,43 +276,6 @@ function findAircraftInMasterCsv(nNumber, csvPath = masterCsvPath) {
     rl.on('error', done);
     stream.on('error', done);
   });
-}
-
-function inferAcftRefSchemaFromHeaderLine(line) {
-  const cols = parseCsvLine(String(line || ''));
-  if (!cols || cols.length === 0) return null;
-
-  const indexByName = new Map();
-  for (let i = 0; i < cols.length; i++) {
-    const key = normalizeHeaderName(cols[i]);
-    if (!key) continue;
-    if (!indexByName.has(key)) indexByName.set(key, i);
-  }
-
-  const codeIdx =
-    indexByName.get('MFR MDL CODE') ??
-    indexByName.get('CODE') ??
-    indexByName.get('MFRMDLCODE') ??
-    null;
-
-  if (typeof codeIdx !== 'number') return null;
-
-  const manufacturerIdx =
-    indexByName.get('MANUFACTURER') ??
-    indexByName.get('MFR') ??
-    indexByName.get('MFR NAME') ??
-    null;
-  const modelIdx = indexByName.get('MODEL') ?? indexByName.get('MODEL NAME') ?? null;
-
-  const typeAcftIdx =
-    indexByName.get('TYPE-ACFT') ?? indexByName.get('TYPE ACFT') ?? indexByName.get('TYPE AIRCRAFT') ?? null;
-
-  return {
-    codeIdx,
-    manufacturerIdx: typeof manufacturerIdx === 'number' ? manufacturerIdx : null,
-    modelIdx: typeof modelIdx === 'number' ? modelIdx : null,
-    typeAcftIdx: typeof typeAcftIdx === 'number' ? typeAcftIdx : null,
-  };
 }
 
 function findAircraftInAcftRef(mfrMdlCode, csvPath = acftRefCsvPath) {
@@ -425,8 +291,8 @@ function findAircraftInAcftRef(mfrMdlCode, csvPath = acftRefCsvPath) {
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
     let settled = false;
     let found = null;
-    let schema = null;
     let sawFirstLine = false;
+    const wanted = makeWantedCsvIndices([ACFTREF_COLS.MFR, ACFTREF_COLS.MODEL, ACFTREF_COLS.TYPE_ACFT]);
 
     function done(err) {
       if (settled) return;
@@ -443,34 +309,21 @@ function findAircraftInAcftRef(mfrMdlCode, csvPath = acftRefCsvPath) {
 
       if (!sawFirstLine) {
         sawFirstLine = true;
-        const headerSchema = inferAcftRefSchemaFromHeaderLine(line);
-        schema = headerSchema || {
-          codeIdx: 0,
-          manufacturerIdx: 1,
-          modelIdx: 2,
-          typeAcftIdx: 3,
-        };
-
-        schema.wantedAll = makeWantedCsvIndices([
-          schema.codeIdx,
-          schema.manufacturerIdx,
-          schema.modelIdx,
-          schema.typeAcftIdx,
-        ]);
-
-        if (headerSchema) return;
+        return;
       }
 
-      const fields = parseCsvFieldsAt(line, schema.wantedAll);
-      const candidate = normalizeNNumberField(fields.get(schema.codeIdx));
+      const first = normalizeNNumberField(readFirstCsvField(line));
+      if (first !== needle) return;
+
+      const fields = parseCsvFieldsAt(line, wanted);
+      const candidate = normalizeNNumberField(first);
       if (candidate !== needle) return;
 
       found = {
         mfrMdlCode: needle,
-        manufacturer:
-          schema.manufacturerIdx == null ? '' : String(fields.get(schema.manufacturerIdx) || '').trim(),
-        model: schema.modelIdx == null ? '' : String(fields.get(schema.modelIdx) || '').trim(),
-        typeAcft: schema.typeAcftIdx == null ? '' : String(fields.get(schema.typeAcftIdx) || '').trim(),
+        manufacturer: String(fields.get(ACFTREF_COLS.MFR) || '').trim(),
+        model: String(fields.get(ACFTREF_COLS.MODEL) || '').trim(),
+        typeAcft: String(fields.get(ACFTREF_COLS.TYPE_ACFT) || '').trim(),
       };
       rl.close();
       stream.destroy();
