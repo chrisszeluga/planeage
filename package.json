@@ -13,7 +13,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "@google-cloud/storage": "^7.18.0",
