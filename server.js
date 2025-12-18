@@ -19,11 +19,6 @@ function envPositiveInt(raw, fallback) {
   return Math.max(0, Math.trunc(envNumber(raw, fallback)));
 }
 
-function envPositiveMs(raw, fallback) {
-  const n = envNumber(raw, fallback);
-  return n > 0 ? n : fallback;
-}
-
 const IS_PROD = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT || 3000);
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
@@ -31,14 +26,6 @@ const RAPIDAPI_HOST = 'aerodatabox.p.rapidapi.com';
 const RAPIDAPI_TIMEOUT_MS = Number(process.env.RAPIDAPI_TIMEOUT_MS || 10000);
 const TRUST_PROXY = process.env.TRUST_PROXY;
 
-const FLIGHT_CACHE_TTL_MS = envPositiveMs(process.env.FLIGHT_CACHE_TTL_MS, 5 * 60 * 1000);
-const FLIGHT_CACHE_MAX = envPositiveInt(process.env.FLIGHT_CACHE_MAX, 500);
-const AIRCRAFT_CACHE_TTL_MS = envPositiveMs(
-  process.env.AIRCRAFT_CACHE_TTL_MS,
-  6 * 60 * 60 * 1000
-);
-const AIRCRAFT_CACHE_MAX = envPositiveInt(process.env.AIRCRAFT_CACHE_MAX, 5000);
-const CSV_MAX_INFLIGHT = Math.max(1, envPositiveInt(process.env.CSV_MAX_INFLIGHT, 4));
 const CSV_READ_HIGH_WATER_MARK = envPositiveInt(
   process.env.CSV_READ_HIGH_WATER_MARK,
   256 * 1024
@@ -49,14 +36,6 @@ const masterCsvPath = path.join(__dirname, 'data', 'master.csv');
 const MSG_INVALID_INPUT = 'Invalid input.';
 const MSG_SERVER_ERROR = 'Server error.';
 const MSG_NOT_FOUND = 'Not found.';
-
-const flightCache = new Map();
-const inflightFlight = new Map();
-const aircraftCache = new Map();
-const inflightAircraft = new Map();
-
-let csvInFlight = 0;
-const csvWaiters = [];
 
 function getPublicBypassResult(flightNumber, date) {
   if (flightNumber !== 'TT111') return null;
@@ -90,69 +69,6 @@ function normalizeNNumberFromRegistration(registration) {
 function extractRegistrationFromFlightResponse(data) {
   if (!Array.isArray(data) || data.length === 0) return null;
   return data?.[0]?.aircraft?.registration || null;
-}
-
-function cacheGetLru(map, key) {
-  const entry = map.get(key);
-  if (!entry) return null;
-  if (entry.expiresAt <= Date.now()) {
-    map.delete(key);
-    return null;
-  }
-
-  map.delete(key);
-  map.set(key, entry);
-  return entry.value;
-}
-
-function cacheSetLru(map, key, value, ttlMs, maxEntries) {
-  if (maxEntries <= 0) return;
-
-  const expiresAt = Date.now() + Math.max(1, ttlMs);
-  if (map.has(key)) map.delete(key);
-  map.set(key, { expiresAt, value });
-
-  while (map.size > maxEntries) {
-    const oldestKey = map.keys().next().value;
-    map.delete(oldestKey);
-  }
-}
-
-function getOrCreateInflight(map, key, factory) {
-  const existing = map.get(key);
-  if (existing) return existing;
-
-  const promise = Promise.resolve()
-    .then(factory)
-    .finally(() => map.delete(key));
-  map.set(key, promise);
-  return promise;
-}
-
-function acquireCsvPermit() {
-  if (csvInFlight < CSV_MAX_INFLIGHT) {
-    csvInFlight++;
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => csvWaiters.push(resolve));
-}
-
-function releaseCsvPermit() {
-  csvInFlight = Math.max(0, csvInFlight - 1);
-  const next = csvWaiters.shift();
-  if (next) {
-    csvInFlight++;
-    next();
-  }
-}
-
-async function withCsvPermit(fn) {
-  await acquireCsvPermit();
-  try {
-    return await fn();
-  } finally {
-    releaseCsvPermit();
-  }
 }
 
 function parseCsvLine(line) {
@@ -574,32 +490,13 @@ app.post('/check-flight', checkFlightLimiter, requireJson, validateCheckFlight, 
       return res.status(500).json({ ok: false, message: 'Server not configured.' });
     }
 
-    const flightNumberKey = flightNumber.toUpperCase();
-    const flightKey = `${flightNumberKey}|${date}`;
-    let registration = cacheGetLru(flightCache, flightKey);
-    if (!registration) {
-      registration = await getOrCreateInflight(inflightFlight, flightKey, async () => {
-        const reg = await fetchTailNumber({ flightNumber: flightNumberKey, date });
-        if (reg) cacheSetLru(flightCache, flightKey, reg, FLIGHT_CACHE_TTL_MS, FLIGHT_CACHE_MAX);
-        return reg;
-      });
-    }
+    const registration = await fetchTailNumber({ flightNumber, date });
     if (!registration) {
       return res.json({ ok: false, message: 'Flight details currently unavailable.' });
     }
 
-    const nNumber = normalizeNNumberFromRegistration(registration).toUpperCase();
-
-    let aircraft = cacheGetLru(aircraftCache, nNumber);
-    if (!aircraft) {
-      aircraft = await getOrCreateInflight(inflightAircraft, nNumber, async () => {
-        const result = await withCsvPermit(() => findAircraftInMasterCsv(nNumber));
-        if (result && result.year) {
-          cacheSetLru(aircraftCache, nNumber, result, AIRCRAFT_CACHE_TTL_MS, AIRCRAFT_CACHE_MAX);
-        }
-        return result;
-      });
-    }
+    const nNumber = normalizeNNumberFromRegistration(registration);
+    const aircraft = await findAircraftInMasterCsv(nNumber);
     if (!aircraft || !aircraft.year) {
       return res.json({ ok: false, message: 'Aircraft specs not in local registry.' });
     }
