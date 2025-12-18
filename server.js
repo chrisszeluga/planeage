@@ -32,6 +32,7 @@ const CSV_READ_HIGH_WATER_MARK = envPositiveInt(
 );
 
 const masterCsvPath = path.join(__dirname, 'data', 'master.csv');
+const acftRefCsvPath = path.join(__dirname, 'data', 'acftref.csv');
 
 const MSG_INVALID_INPUT = 'Invalid input.';
 const MSG_SERVER_ERROR = 'Server error.';
@@ -252,18 +253,18 @@ function inferMasterCsvSchemaFromHeaderLine(line) {
 
   const nNumberIdx = indexByName.get('N-NUMBER');
   const yearIdx = indexByName.get('YEAR MFR');
+  const mfrMdlCodeIdx = indexByName.get('MFR MDL CODE') ?? null;
+  const kitManufacturerIdx = indexByName.get('KIT MFR') ?? null;
+  const kitModelIdx = indexByName.get('KIT MODEL') ?? null;
 
   if (typeof nNumberIdx !== 'number' || typeof yearIdx !== 'number') return null;
-
-  const manufacturerIdx =
-    indexByName.get('MANUFACTURER') ?? indexByName.get('KIT MFR') ?? null;
-  const modelIdx = indexByName.get('MODEL') ?? indexByName.get('KIT MODEL') ?? null;
 
   return {
     nNumberIdx,
     yearIdx,
-    manufacturerIdx: typeof manufacturerIdx === 'number' ? manufacturerIdx : null,
-    modelIdx: typeof modelIdx === 'number' ? modelIdx : null,
+    mfrMdlCodeIdx: typeof mfrMdlCodeIdx === 'number' ? mfrMdlCodeIdx : null,
+    kitManufacturerIdx: typeof kitManufacturerIdx === 'number' ? kitManufacturerIdx : null,
+    kitModelIdx: typeof kitModelIdx === 'number' ? kitModelIdx : null,
   };
 }
 
@@ -303,20 +304,23 @@ function findAircraftInMasterCsv(nNumber, csvPath = masterCsvPath) {
         schema = headerSchema || {
           nNumberIdx: 0,
           yearIdx: 4,
-          manufacturerIdx: 20,
-          modelIdx: 21,
+          mfrMdlCodeIdx: 2,
+          kitManufacturerIdx: 31,
+          kitModelIdx: 32,
         };
 
         schema.wantedAll = makeWantedCsvIndices([
           schema.nNumberIdx,
           schema.yearIdx,
-          schema.manufacturerIdx,
-          schema.modelIdx,
+          schema.mfrMdlCodeIdx,
+          schema.kitManufacturerIdx,
+          schema.kitModelIdx,
         ]);
         schema.wantedDetails = makeWantedCsvIndices([
           schema.yearIdx,
-          schema.manufacturerIdx,
-          schema.modelIdx,
+          schema.mfrMdlCodeIdx,
+          schema.kitManufacturerIdx,
+          schema.kitModelIdx,
         ]);
 
         if (headerSchema) return;
@@ -330,11 +334,14 @@ function findAircraftInMasterCsv(nNumber, csvPath = masterCsvPath) {
         found = {
           nNumber: needle,
           year: String(fields.get(schema.yearIdx) || '').trim(),
-          manufacturer:
-            schema.manufacturerIdx == null
+          mfrMdlCode:
+            schema.mfrMdlCodeIdx == null ? '' : String(fields.get(schema.mfrMdlCodeIdx) || '').trim(),
+          kitManufacturer:
+            schema.kitManufacturerIdx == null
               ? ''
-              : String(fields.get(schema.manufacturerIdx) || '').trim(),
-          model: schema.modelIdx == null ? '' : String(fields.get(schema.modelIdx) || '').trim(),
+              : String(fields.get(schema.kitManufacturerIdx) || '').trim(),
+          kitModel:
+            schema.kitModelIdx == null ? '' : String(fields.get(schema.kitModelIdx) || '').trim(),
         };
         rl.close();
         stream.destroy();
@@ -349,11 +356,14 @@ function findAircraftInMasterCsv(nNumber, csvPath = masterCsvPath) {
       found = {
         nNumber: needle,
         year: String(fields.get(schema.yearIdx) || '').trim(),
-        manufacturer:
-          schema.manufacturerIdx == null
+        mfrMdlCode:
+          schema.mfrMdlCodeIdx == null ? '' : String(fields.get(schema.mfrMdlCodeIdx) || '').trim(),
+        kitManufacturer:
+          schema.kitManufacturerIdx == null
             ? ''
-            : String(fields.get(schema.manufacturerIdx) || '').trim(),
-        model: schema.modelIdx == null ? '' : String(fields.get(schema.modelIdx) || '').trim(),
+            : String(fields.get(schema.kitManufacturerIdx) || '').trim(),
+        kitModel:
+          schema.kitModelIdx == null ? '' : String(fields.get(schema.kitModelIdx) || '').trim(),
       };
       rl.close();
       stream.destroy();
@@ -363,6 +373,150 @@ function findAircraftInMasterCsv(nNumber, csvPath = masterCsvPath) {
     rl.on('error', done);
     stream.on('error', done);
   });
+}
+
+function inferAcftRefSchemaFromHeaderLine(line) {
+  const cols = parseCsvLine(String(line || ''));
+  if (!cols || cols.length === 0) return null;
+
+  const indexByName = new Map();
+  for (let i = 0; i < cols.length; i++) {
+    const key = normalizeHeaderName(cols[i]);
+    if (!key) continue;
+    if (!indexByName.has(key)) indexByName.set(key, i);
+  }
+
+  const codeIdx =
+    indexByName.get('MFR MDL CODE') ??
+    indexByName.get('CODE') ??
+    indexByName.get('MFRMDLCODE') ??
+    null;
+
+  if (typeof codeIdx !== 'number') return null;
+
+  const manufacturerIdx =
+    indexByName.get('MANUFACTURER') ??
+    indexByName.get('MFR') ??
+    indexByName.get('MFR NAME') ??
+    null;
+  const modelIdx = indexByName.get('MODEL') ?? indexByName.get('MODEL NAME') ?? null;
+
+  const typeAcftIdx =
+    indexByName.get('TYPE-ACFT') ?? indexByName.get('TYPE ACFT') ?? indexByName.get('TYPE AIRCRAFT') ?? null;
+
+  return {
+    codeIdx,
+    manufacturerIdx: typeof manufacturerIdx === 'number' ? manufacturerIdx : null,
+    modelIdx: typeof modelIdx === 'number' ? modelIdx : null,
+    typeAcftIdx: typeof typeAcftIdx === 'number' ? typeAcftIdx : null,
+  };
+}
+
+function findAircraftInAcftRef(mfrMdlCode, csvPath = acftRefCsvPath) {
+  return new Promise((resolve, reject) => {
+    const needle = String(mfrMdlCode || '').trim().toUpperCase();
+    if (!needle) return resolve(null);
+
+    const stream = fs.createReadStream(csvPath, {
+      encoding: 'utf8',
+      highWaterMark: CSV_READ_HIGH_WATER_MARK,
+    });
+
+    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    let settled = false;
+    let found = null;
+    let schema = null;
+    let sawFirstLine = false;
+
+    function done(err) {
+      if (settled) return;
+      settled = true;
+      if (err) {
+        if (err && err.code === 'ENOENT') return resolve(null);
+        reject(err);
+      } else resolve(found);
+    }
+
+    rl.on('line', (line) => {
+      if (found) return;
+      if (!line) return;
+
+      if (!sawFirstLine) {
+        sawFirstLine = true;
+        const headerSchema = inferAcftRefSchemaFromHeaderLine(line);
+        schema = headerSchema || {
+          codeIdx: 0,
+          manufacturerIdx: 1,
+          modelIdx: 2,
+          typeAcftIdx: 3,
+        };
+
+        schema.wantedAll = makeWantedCsvIndices([
+          schema.codeIdx,
+          schema.manufacturerIdx,
+          schema.modelIdx,
+          schema.typeAcftIdx,
+        ]);
+
+        if (headerSchema) return;
+      }
+
+      const fields = parseCsvFieldsAt(line, schema.wantedAll);
+      const candidate = normalizeNNumberField(fields.get(schema.codeIdx));
+      if (candidate !== needle) return;
+
+      found = {
+        mfrMdlCode: needle,
+        manufacturer:
+          schema.manufacturerIdx == null ? '' : String(fields.get(schema.manufacturerIdx) || '').trim(),
+        model: schema.modelIdx == null ? '' : String(fields.get(schema.modelIdx) || '').trim(),
+        typeAcft: schema.typeAcftIdx == null ? '' : String(fields.get(schema.typeAcftIdx) || '').trim(),
+      };
+      rl.close();
+      stream.destroy();
+    });
+
+    rl.on('close', () => done());
+    rl.on('error', done);
+    stream.on('error', done);
+  });
+}
+
+async function resolveAircraftSpecsByNNumber(
+  nNumber,
+  { masterPath = masterCsvPath, acftRefPath = acftRefCsvPath } = {}
+) {
+  const aircraft = await findAircraftInMasterCsv(nNumber, masterPath);
+  if (!aircraft) return null;
+
+  let manufacturer = '';
+  let model = '';
+  let typeAcft = '';
+
+  const hasCode = String(aircraft.mfrMdlCode || '').trim();
+  if (hasCode) {
+    const ref = await findAircraftInAcftRef(aircraft.mfrMdlCode, acftRefPath);
+    if (ref) {
+      manufacturer = String(ref.manufacturer || '').trim();
+      model = String(ref.model || '').trim();
+      typeAcft = String(ref.typeAcft || '').trim();
+    }
+  }
+
+  if (!manufacturer && !model) {
+    manufacturer = String(aircraft.kitManufacturer || '').trim();
+    model = String(aircraft.kitModel || '').trim();
+  }
+
+  const aircraftType = [manufacturer, model].filter(Boolean).join(' ') || '';
+
+  return {
+    ...aircraft,
+    manufacturer,
+    model,
+    aircraftType: aircraftType || null,
+    typeAcft: typeAcft || null,
+  };
 }
 
 async function fetchTailNumber({
@@ -510,7 +664,7 @@ app.post('/check-flight', checkFlightLimiter, requireJson, validateCheckFlight, 
 
     const registration = tailResult.registration;
     const nNumber = normalizeNNumberFromRegistration(registration);
-    const aircraft = await findAircraftInMasterCsv(nNumber);
+    const aircraft = await resolveAircraftSpecsByNNumber(nNumber);
     if (!aircraft || !aircraft.year) {
       return res.json({ ok: false, message: 'Aircraft specs not in local registry.' });
     }
@@ -528,6 +682,7 @@ app.post('/check-flight', checkFlightLimiter, requireJson, validateCheckFlight, 
       year: aircraft.year,
       manufacturer: aircraft.manufacturer,
       model: aircraft.model,
+      aircraftType: aircraft.aircraftType,
       age,
     });
   } catch (err) {
@@ -561,6 +716,8 @@ module.exports = {
   normalizeNNumberFromRegistration,
   extractRegistrationFromFlightResponse,
   findAircraftInMasterCsv,
+  findAircraftInAcftRef,
+  resolveAircraftSpecsByNNumber,
   fetchTailNumber,
   getPublicBypassResult,
 };

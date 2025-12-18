@@ -11,6 +11,7 @@ Resolve `Flight #` → `Tail #` → `Mfr Year` → `Aircraft Age`.
    - set `RAPIDAPI_KEY=...`
 3. Download the FAA registry cache (large):
    - `npm run refresh`
+   - downloads both `data/master.csv` and `data/acftref.csv` (used for aircraft make/model)
 
 ## Run
 
@@ -23,7 +24,7 @@ For demos without calling RapidAPI: submit flight `TT111` on `2025-01-01` to ret
 
 ## Scripts
 
-- `npm run refresh` — download + atomically swap `data/master.csv`
+- `npm run refresh` — download + atomically swap `data/master.csv` and `data/acftref.csv`
 - `npm test` — minimalist test suite (no external calls)
 - `npm run verify` — memory/stream sanity check (early-match lookup)
 - `npm run verify:full` — worst-case full scan (no-match)

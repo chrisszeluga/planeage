@@ -184,7 +184,8 @@
         return;
       }
 
-      const type = [data.manufacturer, data.model].filter(Boolean).join(' ') || '—';
+      const type =
+        data.aircraftType || [data.manufacturer, data.model].filter(Boolean).join(' ') || '—';
       const year = data.year || '—';
       const reg = data.registration || (data.nNumber ? `N${data.nNumber}` : '—');
       const age = Number.isFinite(data.age) ? data.age : 0;

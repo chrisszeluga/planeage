@@ -8,6 +8,8 @@ const {
   normalizeNNumberFromRegistration,
   extractRegistrationFromFlightResponse,
   findAircraftInMasterCsv,
+  findAircraftInAcftRef,
+  resolveAircraftSpecsByNNumber,
   fetchTailNumber,
   getPublicBypassResult,
 } = require('../server');
@@ -29,20 +31,42 @@ test('codeshare array handling uses first result', () => {
 });
 
 test('CSV lookup finds by N-number (trimmed)', async () => {
-  const csvPath = path.join(__dirname, 'fixtures', 'master.sample.csv');
+  const csvPath = path.join(__dirname, 'fixtures', 'master.real.header.csv');
   const r1 = await findAircraftInMasterCsv('123AB', csvPath);
   assert.equal(r1.year, '2015');
+  assert.equal(r1.mfrMdlCode, '0001234');
 
   const r2 = await findAircraftInMasterCsv('100', csvPath);
   assert.equal(r2.year, '1998');
+  assert.equal(r2.mfrMdlCode, '0009999');
+  assert.equal(r2.kitManufacturer, 'KITCO');
+  assert.equal(r2.kitModel, 'MODEL-X');
 });
 
 test('CSV lookup uses header names (KIT MFR / KIT MODEL fallback)', async () => {
   const csvPath = path.join(__dirname, 'fixtures', 'master.kit.schema.csv');
   const r = await findAircraftInMasterCsv('12345', csvPath);
   assert.equal(r.year, '2010');
-  assert.equal(r.manufacturer, 'BEECHCRAFT');
-  assert.equal(r.model, 'KING AIR 350');
+  assert.equal(r.kitManufacturer, 'BEECHCRAFT');
+  assert.equal(r.kitModel, 'KING AIR 350');
+});
+
+test('ACFTREF lookup returns aircraft type text', async () => {
+  const csvPath = path.join(__dirname, 'fixtures', 'acftref.sample.csv');
+  const r = await findAircraftInAcftRef('0001234', csvPath);
+  assert.equal(r.manufacturer, 'BOEING');
+  assert.equal(r.model, '737-800');
+  assert.equal(r.typeAcft, '4');
+});
+
+test('Resolve specs joins MASTER -> ACFTREF when MANUFACTURER/MODEL missing', async () => {
+  const masterPath = path.join(__dirname, 'fixtures', 'master.mfrmdl.only.csv');
+  const acftRefPath = path.join(__dirname, 'fixtures', 'acftref.sample.csv');
+  const r = await resolveAircraftSpecsByNNumber('123AB', { masterPath, acftRefPath });
+  assert.equal(r.year, '2015');
+  assert.equal(r.manufacturer, 'BOEING');
+  assert.equal(r.model, '737-800');
+  assert.equal(r.aircraftType, 'BOEING 737-800');
 });
 
 test('fetchTailNumber reads response[0].aircraft.reg', async () => {

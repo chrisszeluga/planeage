@@ -9,9 +9,12 @@ const FAA_ZIP_URL = 'https://registry.faa.gov/database/ReleasableAircraft.zip';
 
 const dataDir = path.join(__dirname, '..', 'data');
 const zipPath = path.join(dataDir, 'temp.zip');
-const extractedPath = path.join(dataDir, 'MASTER.txt');
+const extractedMasterPath = path.join(dataDir, 'MASTER.txt');
+const extractedAcftRefPath = path.join(dataDir, 'ACFTREF.txt');
 const masterPath = path.join(dataDir, 'master.csv');
-const oldPath = path.join(dataDir, 'master.old');
+const acftRefPath = path.join(dataDir, 'acftref.csv');
+const oldMasterPath = path.join(dataDir, 'master.old');
+const oldAcftRefPath = path.join(dataDir, 'acftref.old');
 
 function envPositiveMs(raw, fallback) {
   const n = Number(raw);
@@ -82,43 +85,50 @@ function downloadToFile(url, destPath, redirectsLeft = MAX_REDIRECTS) {
   });
 }
 
-async function extractMasterTxt(zipFilePath) {
+async function extractTxtFromZip(zipFilePath, suffixLower, destPath) {
   const zip = new AdmZip(zipFilePath);
   const entry = zip
     .getEntries()
-    .find((e) => (e.entryName || '').toLowerCase().endsWith('master.txt'));
+    .find((e) => (e.entryName || '').toLowerCase().endsWith(suffixLower));
 
-  if (!entry) throw new Error('MASTER.txt not found in zip');
+  if (!entry) throw new Error(`${suffixLower} not found in zip`);
 
-  await fsp.rm(extractedPath, { force: true });
+  await fsp.rm(destPath, { force: true });
   zip.extractEntryTo(entry.entryName, dataDir, false, true);
 
-  if (!(await pathExists(extractedPath))) {
-    throw new Error('Extraction failed (MASTER.txt missing after extract)');
+  if (!(await pathExists(destPath))) {
+    throw new Error(`Extraction failed (${suffixLower} missing after extract)`);
   }
 }
 
 async function atomicSwap() {
-  const hasCurrent = await pathExists(masterPath);
-  if (hasCurrent) await fsp.rename(masterPath, oldPath);
+  const hasMaster = await pathExists(masterPath);
+  const hasAcftRef = await pathExists(acftRefPath);
 
   try {
-    await fsp.rename(extractedPath, masterPath);
+    if (hasMaster) await fsp.rename(masterPath, oldMasterPath);
+    if (hasAcftRef) await fsp.rename(acftRefPath, oldAcftRefPath);
+
+    await fsp.rename(extractedMasterPath, masterPath);
+    await fsp.rename(extractedAcftRefPath, acftRefPath);
   } catch (err) {
-    if (hasCurrent && (await pathExists(oldPath)) && !(await pathExists(masterPath))) {
-      try {
-        await fsp.rename(oldPath, masterPath);
-      } catch {}
+    if (hasMaster && (await pathExists(oldMasterPath)) && !(await pathExists(masterPath))) {
+      try { await fsp.rename(oldMasterPath, masterPath); } catch {}
+    }
+    if (hasAcftRef && (await pathExists(oldAcftRefPath)) && !(await pathExists(acftRefPath))) {
+      try { await fsp.rename(oldAcftRefPath, acftRefPath); } catch {}
     }
     throw err;
   }
 
-  if (hasCurrent) await fsp.rm(oldPath, { force: true });
+  if (hasMaster) await fsp.rm(oldMasterPath, { force: true });
+  if (hasAcftRef) await fsp.rm(oldAcftRefPath, { force: true });
   await fsp.rm(zipPath, { force: true });
 }
 
 async function cleanupTemps() {
-  await fsp.rm(extractedPath, { force: true });
+  await fsp.rm(extractedMasterPath, { force: true });
+  await fsp.rm(extractedAcftRefPath, { force: true });
   await fsp.rm(zipPath, { force: true });
 }
 
@@ -130,9 +140,12 @@ async function main() {
     await downloadToFile(FAA_ZIP_URL, zipPath);
 
     console.log('Extracting MASTER.txt...');
-    await extractMasterTxt(zipPath);
+    await extractTxtFromZip(zipPath, 'master.txt', extractedMasterPath);
 
-    console.log('Swapping in new master.csv...');
+    console.log('Extracting ACFTREF.txt...');
+    await extractTxtFromZip(zipPath, 'acftref.txt', extractedAcftRefPath);
+
+    console.log('Swapping in new data files...');
     await atomicSwap();
 
     console.log('Done.');
