@@ -3,7 +3,10 @@ node_modules/
 .env.*
 data/master.csv
 data/master.old
+data/acftref.csv
+data/acftref.old
 data/temp.zip
 .DS_Store
 npm-debug.log*
 *-debug.log*
+.gcloud/

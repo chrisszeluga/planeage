@@ -1,0 +1,11 @@
+node_modules/
+.env
+.env.*
+.DS_Store
+npm-debug.log*
+*-debug.log*
+
+# FAA cache is stored in Cloud Storage for Cloud Run deployments.
+data/*.csv
+data/*.old
+data/temp.zip
