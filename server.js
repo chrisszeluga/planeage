@@ -1,4 +1,7 @@
-if (require.main === module) require('dotenv').config();
+if (require.main === module) {
+  process.env.DOTENV_CONFIG_QUIET = 'true';
+  require('dotenv').config();
+}
 
 const express = require('express');
 const helmet = require('helmet');
@@ -21,12 +24,22 @@ function envPositiveInt(raw, fallback) {
   return Math.max(0, Math.trunc(envNumber(raw, fallback)));
 }
 
+function envBool(raw, fallback = false) {
+  if (raw === undefined || raw === null) return fallback;
+  const v = String(raw).trim().toLowerCase();
+  if (!v) return fallback;
+  if (v === '1' || v === 'true' || v === 'yes' || v === 'on') return true;
+  if (v === '0' || v === 'false' || v === 'no' || v === 'off') return false;
+  return fallback;
+}
+
 const IS_PROD = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT || 3000);
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const RAPIDAPI_HOST = 'aerodatabox.p.rapidapi.com';
 const RAPIDAPI_TIMEOUT_MS = Number(process.env.RAPIDAPI_TIMEOUT_MS || 10000);
 const TRUST_PROXY = process.env.TRUST_PROXY;
+const PLANEAGE_DEBUG = envBool(process.env.PLANEAGE_DEBUG, false);
 const FAA_DATA_BACKEND = String(process.env.FAA_DATA_BACKEND || '').trim().toLowerCase();
 const GCS_BUCKET = String(process.env.GCS_BUCKET || '').trim();
 const GCS_MASTER_OBJECT = String(process.env.GCS_MASTER_OBJECT || '').trim();
@@ -538,9 +551,9 @@ async function fetchTailNumber({
   fetchImpl = globalThis.fetch,
   timeoutMs = RAPIDAPI_TIMEOUT_MS,
 } = {}) {
-  if (!apiKey) return { ok: false, registration: null };
+  if (!apiKey) return { ok: false, registration: null, status: null, error: 'missing_key' };
   if (typeof fetchImpl !== 'function') {
-    return { ok: false, registration: null };
+    return { ok: false, registration: null, status: null, error: 'missing_fetch' };
   }
 
   const url = `https://${RAPIDAPI_HOST}/flights/number/${encodeURIComponent(
@@ -561,23 +574,45 @@ async function fetchTailNumber({
       },
     });
   } catch (err) {
-    return { ok: false, registration: null };
+    return {
+      ok: false,
+      registration: null,
+      status: null,
+      error: err && err.name === 'AbortError' ? 'timeout' : 'fetch_failed',
+      detail: err && err.message ? String(err.message) : String(err),
+    };
   } finally {
     clearTimeout(timeoutId);
   }
 
   if (!response.ok) {
-    return { ok: false, registration: null };
+    let body = '';
+    try {
+      body = await response.text();
+    } catch {}
+    return {
+      ok: false,
+      registration: null,
+      status: response.status,
+      error: 'http_error',
+      detail: String(body || '').slice(0, 600),
+    };
   }
 
   let data;
   try {
     data = await response.json();
   } catch (err) {
-    return { ok: false, registration: null };
+    return {
+      ok: false,
+      registration: null,
+      status: response.status,
+      error: 'invalid_json',
+      detail: err && err.message ? String(err.message) : String(err),
+    };
   }
   const registration = extractRegistrationFromFlightResponse(data);
-  return { ok: true, registration: registration || null };
+  return { ok: true, registration: registration || null, status: response.status };
 }
 
 if (TRUST_PROXY) {
@@ -781,6 +816,15 @@ app.post('/check-flight', checkFlightLimiter, requireJson, validateCheckFlight, 
 
     const tailResult = await fetchTailNumber({ flightNumber, date });
     if (!tailResult.ok) {
+      if (PLANEAGE_DEBUG) {
+        console.warn('RapidAPI lookup failed', {
+          flightNumber,
+          date,
+          status: tailResult.status || null,
+          error: tailResult.error || null,
+          detail: tailResult.detail || null,
+        });
+      }
       return res.json({ ok: false, message: 'Flight details currently unavailable.' });
     }
 

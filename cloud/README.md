@@ -26,6 +26,7 @@ The web service reads `faa/current.json` and streams the referenced CSV objects 
 - `GCS_BUCKET=your-bucket`
 - `GCS_MANIFEST_OBJECT=faa/current.json` (optional; default is `faa/current.json`)
 - `GCS_MANIFEST_CACHE_MS=60000` (optional)
+- `TRUST_PROXY=1` (recommended on Cloud Run for correct IP/rate limiting)
 
 ### Refresh job (`node scripts/refresh-faa.js`)
 
@@ -53,3 +54,11 @@ The deploy script builds a single image using Buildpacks (`gcloud builds submit 
 
 - Cloud Run service: default CNB process `web`
 - Cloud Run job: CNB process `refresh` (provided via the repo root `Procfile`)
+
+## Updating the RapidAPI secret from `.env`
+
+Avoid piping `node -e "require('dotenv').config(); ..."` directly into `gcloud secrets versions add`, because some `dotenv` versions print tips to stdout and can contaminate the secret value.
+
+Use quiet mode:
+
+- `DOTENV_CONFIG_QUIET=true node -e 'require(\"dotenv\").config(); process.stdout.write(process.env.RAPIDAPI_KEY||\"\");' | gcloud secrets versions add rapidapi-key --project planeage --data-file=-`
