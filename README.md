@@ -4,6 +4,8 @@ Resolve `Flight #` → `Tail #` → `Mfr Year` → `Aircraft Age`, all in a litt
 
 This application was built and deployed in one night using OpenAI Codex (5.2 High) / Claude (for UI Inspiration) / Gemini (for requirement building).
 
+View it live at [planeage.com](https://planeage.com/).
+
 ## Setup
 
 1. Install deps:
