@@ -93,6 +93,41 @@ function parseCsvLine(line) {
   return out;
 }
 
+function normalizeHeaderName(value) {
+  return String(value || '')
+    .replace(/^\uFEFF/, '')
+    .trim()
+    .toUpperCase();
+}
+
+function inferMasterCsvSchemaFromHeaderLine(line) {
+  const cols = parseCsvLine(String(line || ''));
+  if (!cols || cols.length === 0) return null;
+
+  const indexByName = new Map();
+  for (let i = 0; i < cols.length; i++) {
+    const key = normalizeHeaderName(cols[i]);
+    if (!key) continue;
+    if (!indexByName.has(key)) indexByName.set(key, i);
+  }
+
+  const nNumberIdx = indexByName.get('N-NUMBER');
+  const yearIdx = indexByName.get('YEAR MFR');
+
+  if (typeof nNumberIdx !== 'number' || typeof yearIdx !== 'number') return null;
+
+  const manufacturerIdx =
+    indexByName.get('MANUFACTURER') ?? indexByName.get('KIT MFR') ?? null;
+  const modelIdx = indexByName.get('MODEL') ?? indexByName.get('KIT MODEL') ?? null;
+
+  return {
+    nNumberIdx,
+    yearIdx,
+    manufacturerIdx: typeof manufacturerIdx === 'number' ? manufacturerIdx : null,
+    modelIdx: typeof modelIdx === 'number' ? modelIdx : null,
+  };
+}
+
 function findAircraftInMasterCsv(nNumber, csvPath = masterCsvPath) {
   return new Promise((resolve, reject) => {
     const needle = String(nNumber || '').trim();
@@ -103,6 +138,8 @@ function findAircraftInMasterCsv(nNumber, csvPath = masterCsvPath) {
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
     let settled = false;
     let found = null;
+    let schema = null;
+    let sawFirstLine = false;
 
     function done(err) {
       if (settled) return;
@@ -118,19 +155,57 @@ function findAircraftInMasterCsv(nNumber, csvPath = masterCsvPath) {
       if (found) return;
       if (!line) return;
 
+      if (!sawFirstLine) {
+        sawFirstLine = true;
+        const headerSchema = inferMasterCsvSchemaFromHeaderLine(line);
+        schema = headerSchema || {
+            nNumberIdx: 0,
+            yearIdx: 4,
+            manufacturerIdx: 20,
+            modelIdx: 21,
+          };
+
+        if (headerSchema) return;
+      }
+
+      if (schema.nNumberIdx !== 0) {
+        const cols = parseCsvLine(line);
+        const candidate = String(cols[schema.nNumberIdx] || '')
+          .replace(/^\uFEFF/, '')
+          .replace(/"/g, '')
+          .trim();
+        if (candidate !== needle) return;
+
+        found = {
+          nNumber: needle,
+          year: String(cols[schema.yearIdx] || '').trim(),
+          manufacturer:
+            schema.manufacturerIdx == null ? '' : String(cols[schema.manufacturerIdx] || '').trim(),
+          model: schema.modelIdx == null ? '' : String(cols[schema.modelIdx] || '').trim(),
+        };
+        rl.close();
+        stream.destroy();
+        return;
+      }
+
       const comma = line.indexOf(',');
       if (comma <= 0) return;
-      const first = line.slice(0, comma).replace(/"/g, '').trim();
+      const first = line
+        .slice(0, comma)
+        .replace(/^\uFEFF/, '')
+        .replace(/"/g, '')
+        .trim();
       if (first !== needle) return;
 
       const cols = parseCsvLine(line);
-      if (!cols || cols.length < 5) return;
+      if (!cols || cols.length <= schema.yearIdx) return;
 
       found = {
         nNumber: needle,
-        year: String(cols[4] || '').trim(),
-        manufacturer: String(cols[20] || '').trim(),
-        model: String(cols[21] || '').trim(),
+        year: String(cols[schema.yearIdx] || '').trim(),
+        manufacturer:
+          schema.manufacturerIdx == null ? '' : String(cols[schema.manufacturerIdx] || '').trim(),
+        model: schema.modelIdx == null ? '' : String(cols[schema.modelIdx] || '').trim(),
       };
       rl.close();
       stream.destroy();

@@ -36,6 +36,14 @@ test('CSV lookup finds by N-number (trimmed)', async () => {
   assert.equal(r2.year, '1998');
 });
 
+test('CSV lookup uses header names (KIT MFR / KIT MODEL fallback)', async () => {
+  const csvPath = path.join(__dirname, 'fixtures', 'master.kit.schema.csv');
+  const r = await findAircraftInMasterCsv('12345', csvPath);
+  assert.equal(r.year, '2010');
+  assert.equal(r.manufacturer, 'BEECHCRAFT');
+  assert.equal(r.model, 'KING AIR 350');
+});
+
 test('fetchTailNumber reads response[0].aircraft.registration', async () => {
   const fetchImpl = async () => ({
     ok: true,
