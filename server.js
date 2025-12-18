@@ -10,6 +10,20 @@ const readline = require('readline');
 
 const app = express();
 
+function envNumber(raw, fallback) {
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function envPositiveInt(raw, fallback) {
+  return Math.max(0, Math.trunc(envNumber(raw, fallback)));
+}
+
+function envPositiveMs(raw, fallback) {
+  const n = envNumber(raw, fallback);
+  return n > 0 ? n : fallback;
+}
+
 const IS_PROD = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT || 3000);
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
@@ -17,11 +31,32 @@ const RAPIDAPI_HOST = 'aerodatabox.p.rapidapi.com';
 const RAPIDAPI_TIMEOUT_MS = Number(process.env.RAPIDAPI_TIMEOUT_MS || 10000);
 const TRUST_PROXY = process.env.TRUST_PROXY;
 
+const FLIGHT_CACHE_TTL_MS = envPositiveMs(process.env.FLIGHT_CACHE_TTL_MS, 5 * 60 * 1000);
+const FLIGHT_CACHE_MAX = envPositiveInt(process.env.FLIGHT_CACHE_MAX, 500);
+const AIRCRAFT_CACHE_TTL_MS = envPositiveMs(
+  process.env.AIRCRAFT_CACHE_TTL_MS,
+  6 * 60 * 60 * 1000
+);
+const AIRCRAFT_CACHE_MAX = envPositiveInt(process.env.AIRCRAFT_CACHE_MAX, 5000);
+const CSV_MAX_INFLIGHT = Math.max(1, envPositiveInt(process.env.CSV_MAX_INFLIGHT, 4));
+const CSV_READ_HIGH_WATER_MARK = envPositiveInt(
+  process.env.CSV_READ_HIGH_WATER_MARK,
+  256 * 1024
+);
+
 const masterCsvPath = path.join(__dirname, 'data', 'master.csv');
 
 const MSG_INVALID_INPUT = 'Invalid input.';
 const MSG_SERVER_ERROR = 'Server error.';
 const MSG_NOT_FOUND = 'Not found.';
+
+const flightCache = new Map();
+const inflightFlight = new Map();
+const aircraftCache = new Map();
+const inflightAircraft = new Map();
+
+let csvInFlight = 0;
+const csvWaiters = [];
 
 function getPublicBypassResult(flightNumber, date) {
   if (flightNumber !== 'TT111') return null;
@@ -38,7 +73,7 @@ function getPublicBypassResult(flightNumber, date) {
 }
 
 function normalizeFlightNumber(value) {
-  return String(value || '').replace(/\s+/g, '');
+  return String(value || '').replace(/\s+/g, '').toUpperCase();
 }
 
 function normalizeDate(value) {
@@ -49,12 +84,75 @@ function normalizeDate(value) {
 
 function normalizeNNumberFromRegistration(registration) {
   const cleaned = String(registration || '').trim().replace(/[^0-9a-z]/gi, '');
-  return cleaned.replace(/^N/i, '');
+  return cleaned.replace(/^N/i, '').toUpperCase();
 }
 
 function extractRegistrationFromFlightResponse(data) {
   if (!Array.isArray(data) || data.length === 0) return null;
   return data?.[0]?.aircraft?.registration || null;
+}
+
+function cacheGetLru(map, key) {
+  const entry = map.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    map.delete(key);
+    return null;
+  }
+
+  map.delete(key);
+  map.set(key, entry);
+  return entry.value;
+}
+
+function cacheSetLru(map, key, value, ttlMs, maxEntries) {
+  if (maxEntries <= 0) return;
+
+  const expiresAt = Date.now() + Math.max(1, ttlMs);
+  if (map.has(key)) map.delete(key);
+  map.set(key, { expiresAt, value });
+
+  while (map.size > maxEntries) {
+    const oldestKey = map.keys().next().value;
+    map.delete(oldestKey);
+  }
+}
+
+function getOrCreateInflight(map, key, factory) {
+  const existing = map.get(key);
+  if (existing) return existing;
+
+  const promise = Promise.resolve()
+    .then(factory)
+    .finally(() => map.delete(key));
+  map.set(key, promise);
+  return promise;
+}
+
+function acquireCsvPermit() {
+  if (csvInFlight < CSV_MAX_INFLIGHT) {
+    csvInFlight++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => csvWaiters.push(resolve));
+}
+
+function releaseCsvPermit() {
+  csvInFlight = Math.max(0, csvInFlight - 1);
+  const next = csvWaiters.shift();
+  if (next) {
+    csvInFlight++;
+    next();
+  }
+}
+
+async function withCsvPermit(fn) {
+  await acquireCsvPermit();
+  try {
+    return await fn();
+  } finally {
+    releaseCsvPermit();
+  }
 }
 
 function parseCsvLine(line) {
@@ -90,6 +188,131 @@ function parseCsvLine(line) {
   }
 
   out.push(field);
+  return out;
+}
+
+function stripLeadingBom(value) {
+  const str = String(value || '');
+  if (str.length > 0 && str.charCodeAt(0) === 0xfeff) return str.slice(1);
+  return str;
+}
+
+function stripAllQuotes(value) {
+  const str = String(value || '');
+  if (str.indexOf('"') === -1) return str;
+  let out = '';
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (ch !== '"') out += ch;
+  }
+  return out;
+}
+
+function toUpperIfNeeded(value) {
+  const str = String(value || '');
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    if (code >= 97 && code <= 122) return str.toUpperCase();
+  }
+  return str;
+}
+
+function normalizeNNumberField(value) {
+  return toUpperIfNeeded(stripAllQuotes(stripLeadingBom(value)).trim());
+}
+
+function readFirstCsvField(line) {
+  const str = String(line || '');
+  if (!str) return '';
+
+  if (str[0] !== '"') {
+    const comma = str.indexOf(',');
+    if (comma === -1) return str;
+    return str.slice(0, comma);
+  }
+
+  let inQuotes = true;
+  let field = '';
+
+  for (let i = 1; i < str.length; i++) {
+    const ch = str[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (str[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += ch;
+      }
+      continue;
+    }
+
+    if (ch === ',') break;
+  }
+
+  return field;
+}
+
+function makeWantedCsvIndices(indices) {
+  const unique = Array.from(new Set(indices)).filter((n) => Number.isFinite(n) && n >= 0);
+  unique.sort((a, b) => a - b);
+  return {
+    indices: unique,
+    set: new Set(unique),
+    max: unique.length ? unique[unique.length - 1] : -1,
+  };
+}
+
+function parseCsvFieldsAt(line, wanted) {
+  const str = String(line || '');
+  if (!str) return new Map();
+
+  let fieldIndex = 0;
+  let inQuotes = false;
+  let collect = wanted.set.has(0);
+  let field = collect ? '' : null;
+
+  const out = new Map();
+
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+
+    if (inQuotes) {
+      if (ch === '"') {
+        if (str[i + 1] === '"') {
+          if (collect) field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else if (collect) {
+        field += ch;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inQuotes = true;
+      continue;
+    }
+
+    if (ch === ',') {
+      if (collect) out.set(fieldIndex, field);
+      if (fieldIndex >= wanted.max) return out;
+
+      fieldIndex++;
+      collect = wanted.set.has(fieldIndex);
+      field = collect ? '' : null;
+      continue;
+    }
+
+    if (collect) field += ch;
+  }
+
+  if (collect) out.set(fieldIndex, field);
   return out;
 }
 
@@ -130,10 +353,13 @@ function inferMasterCsvSchemaFromHeaderLine(line) {
 
 function findAircraftInMasterCsv(nNumber, csvPath = masterCsvPath) {
   return new Promise((resolve, reject) => {
-    const needle = String(nNumber || '').trim();
+    const needle = String(nNumber || '').trim().toUpperCase();
     if (!needle) return resolve(null);
 
-    const stream = fs.createReadStream(csvPath, { encoding: 'utf8' });
+    const stream = fs.createReadStream(csvPath, {
+      encoding: 'utf8',
+      highWaterMark: CSV_READ_HIGH_WATER_MARK,
+    });
 
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
     let settled = false;
@@ -159,53 +385,59 @@ function findAircraftInMasterCsv(nNumber, csvPath = masterCsvPath) {
         sawFirstLine = true;
         const headerSchema = inferMasterCsvSchemaFromHeaderLine(line);
         schema = headerSchema || {
-            nNumberIdx: 0,
-            yearIdx: 4,
-            manufacturerIdx: 20,
-            modelIdx: 21,
-          };
+          nNumberIdx: 0,
+          yearIdx: 4,
+          manufacturerIdx: 20,
+          modelIdx: 21,
+        };
+
+        schema.wantedAll = makeWantedCsvIndices([
+          schema.nNumberIdx,
+          schema.yearIdx,
+          schema.manufacturerIdx,
+          schema.modelIdx,
+        ]);
+        schema.wantedDetails = makeWantedCsvIndices([
+          schema.yearIdx,
+          schema.manufacturerIdx,
+          schema.modelIdx,
+        ]);
 
         if (headerSchema) return;
       }
 
       if (schema.nNumberIdx !== 0) {
-        const cols = parseCsvLine(line);
-        const candidate = String(cols[schema.nNumberIdx] || '')
-          .replace(/^\uFEFF/, '')
-          .replace(/"/g, '')
-          .trim();
+        const fields = parseCsvFieldsAt(line, schema.wantedAll);
+        const candidate = normalizeNNumberField(fields.get(schema.nNumberIdx));
         if (candidate !== needle) return;
 
         found = {
           nNumber: needle,
-          year: String(cols[schema.yearIdx] || '').trim(),
+          year: String(fields.get(schema.yearIdx) || '').trim(),
           manufacturer:
-            schema.manufacturerIdx == null ? '' : String(cols[schema.manufacturerIdx] || '').trim(),
-          model: schema.modelIdx == null ? '' : String(cols[schema.modelIdx] || '').trim(),
+            schema.manufacturerIdx == null
+              ? ''
+              : String(fields.get(schema.manufacturerIdx) || '').trim(),
+          model: schema.modelIdx == null ? '' : String(fields.get(schema.modelIdx) || '').trim(),
         };
         rl.close();
         stream.destroy();
         return;
       }
 
-      const comma = line.indexOf(',');
-      if (comma <= 0) return;
-      const first = line
-        .slice(0, comma)
-        .replace(/^\uFEFF/, '')
-        .replace(/"/g, '')
-        .trim();
+      const first = normalizeNNumberField(readFirstCsvField(line));
       if (first !== needle) return;
 
-      const cols = parseCsvLine(line);
-      if (!cols || cols.length <= schema.yearIdx) return;
+      const fields = parseCsvFieldsAt(line, schema.wantedDetails);
 
       found = {
         nNumber: needle,
-        year: String(cols[schema.yearIdx] || '').trim(),
+        year: String(fields.get(schema.yearIdx) || '').trim(),
         manufacturer:
-          schema.manufacturerIdx == null ? '' : String(cols[schema.manufacturerIdx] || '').trim(),
-        model: schema.modelIdx == null ? '' : String(cols[schema.modelIdx] || '').trim(),
+          schema.manufacturerIdx == null
+            ? ''
+            : String(fields.get(schema.manufacturerIdx) || '').trim(),
+        model: schema.modelIdx == null ? '' : String(fields.get(schema.modelIdx) || '').trim(),
       };
       rl.close();
       stream.destroy();
@@ -251,7 +483,12 @@ async function fetchTailNumber({
 
   if (!response.ok) return null;
 
-  const data = await response.json();
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    return null;
+  }
   return extractRegistrationFromFlightResponse(data);
 }
 
@@ -337,13 +574,32 @@ app.post('/check-flight', checkFlightLimiter, requireJson, validateCheckFlight, 
       return res.status(500).json({ ok: false, message: 'Server not configured.' });
     }
 
-    const registration = await fetchTailNumber({ flightNumber, date });
+    const flightNumberKey = flightNumber.toUpperCase();
+    const flightKey = `${flightNumberKey}|${date}`;
+    let registration = cacheGetLru(flightCache, flightKey);
+    if (!registration) {
+      registration = await getOrCreateInflight(inflightFlight, flightKey, async () => {
+        const reg = await fetchTailNumber({ flightNumber: flightNumberKey, date });
+        if (reg) cacheSetLru(flightCache, flightKey, reg, FLIGHT_CACHE_TTL_MS, FLIGHT_CACHE_MAX);
+        return reg;
+      });
+    }
     if (!registration) {
       return res.json({ ok: false, message: 'Flight details currently unavailable.' });
     }
 
-    const nNumber = normalizeNNumberFromRegistration(registration);
-    const aircraft = await findAircraftInMasterCsv(nNumber);
+    const nNumber = normalizeNNumberFromRegistration(registration).toUpperCase();
+
+    let aircraft = cacheGetLru(aircraftCache, nNumber);
+    if (!aircraft) {
+      aircraft = await getOrCreateInflight(inflightAircraft, nNumber, async () => {
+        const result = await withCsvPermit(() => findAircraftInMasterCsv(nNumber));
+        if (result && result.year) {
+          cacheSetLru(aircraftCache, nNumber, result, AIRCRAFT_CACHE_TTL_MS, AIRCRAFT_CACHE_MAX);
+        }
+        return result;
+      });
+    }
     if (!aircraft || !aircraft.year) {
       return res.json({ ok: false, message: 'Aircraft specs not in local registry.' });
     }

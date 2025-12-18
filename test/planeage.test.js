@@ -14,6 +14,7 @@ const {
 
 test('normalization', () => {
   assert.equal(normalizeFlightNumber('DL 47'), 'DL47');
+  assert.equal(normalizeFlightNumber('dl 47'), 'DL47');
   assert.equal(normalizeDate('2025-01-02'), '2025-01-02');
   assert.equal(normalizeDate('01/02/2025'), null);
   assert.equal(normalizeNNumberFromRegistration('N123AB'), '123AB');

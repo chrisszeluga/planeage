@@ -2,6 +2,7 @@ const https = require('https');
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
+const { pipeline } = require('stream/promises');
 const AdmZip = require('adm-zip');
 
 const FAA_ZIP_URL = 'https://registry.faa.gov/database/ReleasableAircraft.zip';
@@ -12,6 +13,19 @@ const extractedPath = path.join(dataDir, 'MASTER.txt');
 const masterPath = path.join(dataDir, 'master.csv');
 const oldPath = path.join(dataDir, 'master.old');
 
+function envPositiveMs(raw, fallback) {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function envNonNegativeInt(raw, fallback) {
+  const n = Math.trunc(Number(raw));
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+const DOWNLOAD_TIMEOUT_MS = envPositiveMs(process.env.DOWNLOAD_TIMEOUT_MS, 2 * 60 * 1000);
+const MAX_REDIRECTS = envNonNegativeInt(process.env.MAX_REDIRECTS, 5);
+
 async function pathExists(filePath) {
   try {
     await fsp.access(filePath);
@@ -21,7 +35,7 @@ async function pathExists(filePath) {
   }
 }
 
-function downloadToFile(url, destPath) {
+function downloadToFile(url, destPath, redirectsLeft = MAX_REDIRECTS) {
   return new Promise((resolve, reject) => {
     const request = https.get(url, (response) => {
       const isRedirect =
@@ -31,8 +45,11 @@ function downloadToFile(url, destPath) {
 
       if (isRedirect) {
         response.resume();
+        if (redirectsLeft <= 0) {
+          return reject(new Error('Download failed (too many redirects)'));
+        }
         const nextUrl = new URL(response.headers.location, url).toString();
-        return resolve(downloadToFile(nextUrl, destPath));
+        return resolve(downloadToFile(nextUrl, destPath, redirectsLeft - 1));
       }
 
       if (response.statusCode !== 200) {
@@ -41,12 +58,23 @@ function downloadToFile(url, destPath) {
       }
 
       const fileStream = fs.createWriteStream(destPath);
-      response.pipe(fileStream);
+      pipeline(response, fileStream)
+        .then(resolve)
+        .catch(async (err) => {
+          try {
+            await fsp.rm(destPath, { force: true });
+          } catch {}
+          reject(err);
+        });
+    });
 
-      fileStream.on('finish', () => fileStream.close(resolve));
-      fileStream.on('error', (err) => {
-        response.destroy();
-        fs.unlink(destPath, () => reject(err));
+    request.setTimeout(DOWNLOAD_TIMEOUT_MS, () => {
+      request.destroy(new Error(`Download timed out after ${DOWNLOAD_TIMEOUT_MS}ms`));
+    });
+
+    request.on('response', (response) => {
+      response.setTimeout(DOWNLOAD_TIMEOUT_MS, () => {
+        response.destroy(new Error(`Download timed out after ${DOWNLOAD_TIMEOUT_MS}ms`));
       });
     });
 

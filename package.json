@@ -4,7 +4,6 @@
   "description": "Resolve Flight # -> Tail # -> FAA mfr year -> aircraft age.",
   "main": "server.js",
   "scripts": {
-    "refresh:cron": "node scripts/refresh-cron.js",
     "refresh": "node scripts/refresh-faa.js",
     "start": "node server.js",
     "test": "node --test",

@@ -42,3 +42,9 @@
 - [x] **Input Sanitization:** Use `express-validator` to ensure `flightNumber` and `date` match expected regex patterns before processing.
 - [x] **Dependency Audit:** Run `npm audit` and fix any high-severity vulnerabilities.
 - [x] **Graceful Error Handling:** Ensure 500 errors do not leak stack traces or local file paths (like `/Users/name/planeage/data/...`) to the end user.
+
+## Phase 7: Google Cloud Deployment (Buildpacks)
+- [ ] Ensure `package.json` has a `"start": "node server.js"` script.
+- [ ] Create `deploy.sh`: Use `gcloud run deploy --source .` (triggers Buildpacks).
+- [ ] Create `refresh-job.sh`: Use `gcloud run jobs deploy --source .` for the maintenance task.
+- [ ] Document the `gcloud scheduler` command to automate the weekly refresh.
