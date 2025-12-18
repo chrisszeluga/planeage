@@ -8,8 +8,8 @@
     "refresh": "node scripts/refresh-faa.js",
     "start": "node server.js",
     "test": "node --test",
-    "verify": "node --expose-gc scripts/verify-phase5.js",
-    "verify:full": "node --expose-gc scripts/verify-phase5.js --full-scan"
+    "verify": "node --expose-gc scripts/verify.js",
+    "verify:full": "node --expose-gc scripts/verify.js --full-scan"
   },
   "keywords": [],
   "author": "",

@@ -9,6 +9,7 @@ const {
   extractRegistrationFromFlightResponse,
   findAircraftInMasterCsv,
   fetchTailNumber,
+  getPublicBypassResult,
 } = require('../server');
 
 test('normalization', () => {
@@ -50,3 +51,9 @@ test('fetchTailNumber reads response[0].aircraft.registration', async () => {
   assert.equal(reg, 'N12345');
 });
 
+test('public bypass returns star wars demo aircraft', () => {
+  const demo = getPublicBypassResult('TT111', '2025-01-01');
+  assert.ok(demo);
+  assert.equal(demo.age, 10);
+  assert.ok(String(demo.model).toLowerCase().includes('x-wing'));
+});

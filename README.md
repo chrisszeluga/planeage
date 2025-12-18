@@ -17,6 +17,10 @@ Resolve `Flight #` → `Tail #` → `Mfr Year` → `Aircraft Age`.
 - `npm start`
 - Open `http://localhost:3000`
 
+## Demo Bypass
+
+For demos without calling RapidAPI: submit flight `TT111` on `2025-01-01` to return a fictional aircraft with age `10`.
+
 ## Scripts
 
 - `npm run refresh` — download + atomically swap `data/master.csv`
@@ -32,4 +36,3 @@ Resolve `Flight #` → `Tail #` → `Mfr Year` → `Aircraft Age`.
 - `RAPIDAPI_TIMEOUT_MS` — RapidAPI fetch timeout (default `10000`)
 - `TRUST_PROXY` — set when behind a reverse proxy (e.g. `1`)
 - `MAX_AGE_DAYS`, `CHECK_INTERVAL_MS` — refresh cron tuning
-

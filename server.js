@@ -23,6 +23,20 @@ const MSG_INVALID_INPUT = 'Invalid input.';
 const MSG_SERVER_ERROR = 'Server error.';
 const MSG_NOT_FOUND = 'Not found.';
 
+function getPublicBypassResult(flightNumber, date) {
+  if (flightNumber !== 'TT111') return null;
+  if (date !== '2025-01-01') return null;
+
+  return {
+    registration: 'TT-111',
+    nNumber: null,
+    year: '2015',
+    manufacturer: 'Incom Corporation',
+    model: 'T-65B X-wing Starfighter',
+    age: 10,
+  };
+}
+
 function normalizeFlightNumber(value) {
   return String(value || '').replace(/\s+/g, '');
 }
@@ -234,6 +248,16 @@ app.post('/check-flight', checkFlightLimiter, requireJson, validateCheckFlight, 
       return res.status(400).json({ ok: false, message: MSG_INVALID_INPUT });
     }
 
+    const bypass = getPublicBypassResult(flightNumber.toUpperCase(), date);
+    if (bypass) {
+      return res.json({
+        ok: true,
+        flightNumber,
+        date,
+        ...bypass,
+      });
+    }
+
     if (!RAPIDAPI_KEY) {
       return res.status(500).json({ ok: false, message: 'Server not configured.' });
     }
@@ -296,4 +320,5 @@ module.exports = {
   extractRegistrationFromFlightResponse,
   findAircraftInMasterCsv,
   fetchTailNumber,
+  getPublicBypassResult,
 };
