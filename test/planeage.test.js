@@ -22,8 +22,8 @@ test('normalization', () => {
 
 test('codeshare array handling uses first result', () => {
   const data = [
-    { aircraft: { registration: 'FIRST' } },
-    { aircraft: { registration: 'SECOND' } },
+    { aircraft: { reg: 'FIRST' } },
+    { aircraft: { reg: 'SECOND' } },
   ];
   assert.equal(extractRegistrationFromFlightResponse(data), 'FIRST');
 });
@@ -45,19 +45,36 @@ test('CSV lookup uses header names (KIT MFR / KIT MODEL fallback)', async () => 
   assert.equal(r.model, 'KING AIR 350');
 });
 
-test('fetchTailNumber reads response[0].aircraft.registration', async () => {
+test('fetchTailNumber reads response[0].aircraft.reg', async () => {
   const fetchImpl = async () => ({
     ok: true,
-    json: async () => [{ aircraft: { registration: 'N12345' } }],
+    json: async () => [{ aircraft: { reg: 'N12345' } }],
   });
-  const reg = await fetchTailNumber({
+  const result = await fetchTailNumber({
     flightNumber: 'DL47',
     date: '2025-01-02',
     apiKey: 'test',
     fetchImpl,
     timeoutMs: 50,
   });
-  assert.equal(reg, 'N12345');
+  assert.equal(result.ok, true);
+  assert.equal(result.registration, 'N12345');
+});
+
+test('fetchTailNumber ok=true but reg missing returns registration=null', async () => {
+  const fetchImpl = async () => ({
+    ok: true,
+    json: async () => [{ aircraft: {} }],
+  });
+  const result = await fetchTailNumber({
+    flightNumber: 'DL47',
+    date: '2025-01-02',
+    apiKey: 'test',
+    fetchImpl,
+    timeoutMs: 50,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.registration, null);
 });
 
 test('public bypass returns star wars demo aircraft', () => {

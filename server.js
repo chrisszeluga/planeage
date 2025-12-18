@@ -68,7 +68,7 @@ function normalizeNNumberFromRegistration(registration) {
 
 function extractRegistrationFromFlightResponse(data) {
   if (!Array.isArray(data) || data.length === 0) return null;
-  return data?.[0]?.aircraft?.registration || null;
+  return data?.[0]?.aircraft?.reg || data?.[0]?.aircraft?.registration || null;
 }
 
 function parseCsvLine(line) {
@@ -369,10 +369,13 @@ async function fetchTailNumber({
   flightNumber,
   date,
   apiKey = RAPIDAPI_KEY,
-  fetchImpl = fetch,
+  fetchImpl = globalThis.fetch,
   timeoutMs = RAPIDAPI_TIMEOUT_MS,
 } = {}) {
-  if (!apiKey) return null;
+  if (!apiKey) return { ok: false, registration: null };
+  if (typeof fetchImpl !== 'function') {
+    return { ok: false, registration: null };
+  }
 
   const url = `https://${RAPIDAPI_HOST}/flights/number/${encodeURIComponent(
     flightNumber
@@ -391,21 +394,24 @@ async function fetchTailNumber({
         Accept: 'application/json',
       },
     });
-  } catch {
-    return null;
+  } catch (err) {
+    return { ok: false, registration: null };
   } finally {
     clearTimeout(timeoutId);
   }
 
-  if (!response.ok) return null;
+  if (!response.ok) {
+    return { ok: false, registration: null };
+  }
 
   let data;
   try {
     data = await response.json();
-  } catch {
-    return null;
+  } catch (err) {
+    return { ok: false, registration: null };
   }
-  return extractRegistrationFromFlightResponse(data);
+  const registration = extractRegistrationFromFlightResponse(data);
+  return { ok: true, registration: registration || null };
 }
 
 if (TRUST_PROXY) {
@@ -490,11 +496,19 @@ app.post('/check-flight', checkFlightLimiter, requireJson, validateCheckFlight, 
       return res.status(500).json({ ok: false, message: 'Server not configured.' });
     }
 
-    const registration = await fetchTailNumber({ flightNumber, date });
-    if (!registration) {
+    const tailResult = await fetchTailNumber({ flightNumber, date });
+    if (!tailResult.ok) {
       return res.json({ ok: false, message: 'Flight details currently unavailable.' });
     }
 
+    if (!tailResult.registration) {
+      return res.json({
+        ok: false,
+        message: "Airline hasn't published an assigned aircraft yet.",
+      });
+    }
+
+    const registration = tailResult.registration;
     const nNumber = normalizeNNumberFromRegistration(registration);
     const aircraft = await findAircraftInMasterCsv(nNumber);
     if (!aircraft || !aircraft.year) {
