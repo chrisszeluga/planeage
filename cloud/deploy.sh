@@ -20,6 +20,10 @@ GCS_BUCKET="${GCS_BUCKET:-${BUCKET:-}}"
 GCS_MANIFEST_OBJECT="${GCS_MANIFEST_OBJECT:-faa/current.json}"
 GCS_PREFIX="${GCS_PREFIX:-faa}"
 
+AR_REPO="${AR_REPO:-planeage}"
+IMAGE_NAME="${IMAGE_NAME:-planeage-app}"
+IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)}"
+
 RAPIDAPI_SECRET_NAME="${RAPIDAPI_SECRET_NAME:-rapidapi-key}"
 
 WEB_SERVICE_ACCOUNT="${WEB_SERVICE_ACCOUNT:-}"
@@ -27,6 +31,7 @@ REFRESH_SERVICE_ACCOUNT="${REFRESH_SERVICE_ACCOUNT:-}"
 
 REFRESH_TASK_TIMEOUT="${REFRESH_TASK_TIMEOUT:-3600s}"
 REFRESH_MEMORY="${REFRESH_MEMORY:-2Gi}"
+SKIP_BUILD="${SKIP_BUILD:-}"
 
 if [[ -z "$PROJECT_ID" ]]; then
   echo "Set PROJECT_ID (or run: gcloud config set project <id>)" >&2
@@ -49,6 +54,8 @@ echo "Project: $PROJECT_ID"
 echo "Region:  $REGION"
 echo "Bucket:  $GCS_BUCKET"
 
+IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${IMAGE_NAME}:${IMAGE_TAG}"
+
 if [[ -n "${RAPIDAPI_KEY:-}" ]]; then
   echo "Upserting Secret Manager secret: $RAPIDAPI_SECRET_NAME"
   if gcloud secrets describe "$RAPIDAPI_SECRET_NAME" --project "$PROJECT_ID" >/dev/null 2>&1; then
@@ -60,11 +67,31 @@ else
   echo "RAPIDAPI_KEY not set; assuming secret '$RAPIDAPI_SECRET_NAME' already exists."
 fi
 
+if [[ -z "$SKIP_BUILD" ]]; then
+  echo "Ensuring Artifact Registry repo exists: $AR_REPO"
+  if ! gcloud artifacts repositories describe "$AR_REPO" --project "$PROJECT_ID" --location "$REGION" >/dev/null 2>&1; then
+    gcloud artifacts repositories create "$AR_REPO" \
+      --project "$PROJECT_ID" \
+      --location "$REGION" \
+      --repository-format docker \
+      --description "PlaneAge images"
+  fi
+
+  echo "Building image with Buildpacks: $IMAGE"
+  gcloud builds submit \
+    --project "$PROJECT_ID" \
+    --region "$REGION" \
+    --pack "image=$IMAGE" \
+    .
+else
+  echo "SKIP_BUILD set; using existing image tag: $IMAGE"
+fi
+
 echo "Deploying Cloud Run web service: $WEB_SERVICE_NAME"
 gcloud run deploy "$WEB_SERVICE_NAME" \
   --project "$PROJECT_ID" \
   --region "$REGION" \
-  --source . \
+  --image "$IMAGE" \
   --allow-unauthenticated \
   --set-env-vars "FAA_DATA_BACKEND=gcs,GCS_BUCKET=$GCS_BUCKET,GCS_MANIFEST_OBJECT=$GCS_MANIFEST_OBJECT,GCS_MANIFEST_CACHE_MS=60000" \
   --set-secrets "RAPIDAPI_KEY=$RAPIDAPI_SECRET_NAME:latest" \
@@ -74,13 +101,11 @@ echo "Deploying Cloud Run refresh job: $REFRESH_JOB_NAME"
 gcloud run jobs deploy "$REFRESH_JOB_NAME" \
   --project "$PROJECT_ID" \
   --region "$REGION" \
-  --source . \
-  --command node \
-  --args scripts/refresh-faa.js \
+  --image "$IMAGE" \
+  --command /cnb/process/refresh \
   --task-timeout "$REFRESH_TASK_TIMEOUT" \
   --memory "$REFRESH_MEMORY" \
   --set-env-vars "FAA_DATA_DIR=/tmp/planeage-data,GCS_BUCKET=$GCS_BUCKET,GCS_PREFIX=$GCS_PREFIX,GCS_MANIFEST_OBJECT=$GCS_MANIFEST_OBJECT" \
   $(maybe_set_service_account_flag "$REFRESH_SERVICE_ACCOUNT")
 
 echo "Done."
-

@@ -48,3 +48,8 @@ Run `npm run deploy:gcp` (or `cloud/deploy.sh`) after you have `gcloud` authenti
 
 - Provide `RAPIDAPI_KEY` as an environment variable once to create/update the Secret Manager secret (or create it manually).
 - Provide `PROJECT_ID` and `GCS_BUCKET` (and optionally `REGION`, service/job names, and service accounts).
+
+The deploy script builds a single image using Buildpacks (`gcloud builds submit --pack ...`) and deploys:
+
+- Cloud Run service: default CNB process `web`
+- Cloud Run job: CNB process `refresh` (provided via the repo root `Procfile`)

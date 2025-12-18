@@ -46,5 +46,5 @@
 ## Phase 7: Google Cloud Deployment (Buildpacks)
 - [x] We want to use native Google Cloud services. Cloud Storage to store our data. Cloud Run to run the refresh script. Cloud Scheduler to trigger the refresh script. Then a separate Cloud Run for the main web application. Reformat the repo to accomodate this, if needed. Locally, we still want to keep things so the app can run locally with local data as well.
 - [x] Develop the needed deploy script for our app to automatically deploy to Google Cloud using Buildpacks. Make sure to account for any secrets.
-- [ ] Use the `gcloud` CLI to set up required Google Cloud resources to be ready for deployment.
-- [ ] Deploy the app to Google Cloud.
+- [x] Use the `gcloud` CLI to set up required Google Cloud resources to be ready for deployment.
+- [x] Deploy the app to Google Cloud.
