@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.*
+data/master.csv
+data/master.old
+data/temp.zip
+.DS_Store
+npm-debug.log*
+*-debug.log*

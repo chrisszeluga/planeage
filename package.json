@@ -1,0 +1,18 @@
+{
+  "name": "planeage",
+  "version": "0.1.0",
+  "description": "Resolve Flight # -> Tail # -> FAA mfr year -> aircraft age.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1"
+  }
+}
