@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>planeage</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="header">
+      <div class="logo">
+        <svg class="logo__icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path
+            d="M21 16V14L13 9V3.5C13 2.67 12.33 2 11.5 2C10.67 2 10 2.67 10 3.5V9L2 14V16L10 13.5V19L8 20.5V22L11.5 21L15 22V20.5L13 19V13.5L21 16Z"
+            fill="currentColor"
+          />
+        </svg>
+        <span class="logo__text">planeage</span>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="view" id="viewSearch">
+        <h1 class="title">Aircraft Age Lookup</h1>
+        <p class="subtitle">Enter your flight details to see how old your plane is.</p>
+
+        <form class="card" id="form">
+          <div class="row">
+            <div class="field">
+              <label class="label" for="flightNumber">Flight number</label>
+              <input
+                class="input"
+                id="flightNumber"
+                name="flightNumber"
+                type="text"
+                inputmode="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="AA1234"
+                maxlength="10"
+                required
+              />
+            </div>
+
+            <div class="field">
+              <label class="label" for="date">Date</label>
+              <input class="input" id="date" name="date" type="date" required />
+            </div>
+          </div>
+
+          <p class="error" id="error" role="alert" aria-live="polite" hidden></p>
+
+          <button class="button" id="submit" type="submit">
+            <span class="spinner" id="spinner" aria-hidden="true" hidden></span>
+            <span id="buttonText">Look up aircraft</span>
+          </button>
+        </form>
+
+        <p class="hint">
+          Try <span class="hint__code">AA123</span>, <span class="hint__code">UA456</span>, or
+          <span class="hint__code">DL789</span>
+        </p>
+      </section>
+
+      <section class="view view--result" id="viewResult" hidden>
+        <p class="resultLabel">Aircraft Age</p>
+
+        <div class="flaps" aria-label="Aircraft age in years">
+          <div class="flaps__digits" id="flaps" aria-hidden="true">
+            <div class="flap" id="flap0" hidden>
+              <div class="flap__inner"><span class="flap__text" id="flap0Text">0</span></div>
+              <div class="flap__line"></div>
+            </div>
+            <div class="flap" id="flap1">
+              <div class="flap__inner"><span class="flap__text" id="flap1Text">0</span></div>
+              <div class="flap__line"></div>
+            </div>
+            <div class="flap" id="flap2">
+              <div class="flap__inner"><span class="flap__text" id="flap2Text">0</span></div>
+              <div class="flap__line"></div>
+            </div>
+          </div>
+          <span class="flaps__unit">years</span>
+        </div>
+
+        <div class="condition">
+          <span class="condition__dot" id="conditionDot" aria-hidden="true"></span>
+          <span class="condition__text" id="conditionText">—</span>
+        </div>
+
+        <div class="card card--details">
+          <div class="detail">
+            <span class="detail__k">Aircraft</span>
+            <span class="detail__v" id="aircraftType">—</span>
+          </div>
+          <div class="divider" aria-hidden="true"></div>
+          <div class="detail">
+            <span class="detail__k">Built</span>
+            <span class="detail__v" id="mfrYear">—</span>
+          </div>
+          <div class="divider" aria-hidden="true"></div>
+          <div class="detail">
+            <span class="detail__k">Registration</span>
+            <span class="detail__v" id="tail">—</span>
+          </div>
+        </div>
+
+        <button class="reset" id="reset" type="button">Check another flight</button>
+      </section>
+    </main>
+
+    <footer class="footer">For reference only. Not for operational use.</footer>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

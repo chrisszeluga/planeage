@@ -4,7 +4,12 @@
   "description": "Resolve Flight # -> Tail # -> FAA mfr year -> aircraft age.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "refresh:cron": "node scripts/refresh-cron.js",
+    "refresh": "node scripts/refresh-faa.js",
+    "start": "node server.js",
+    "test": "node --test",
+    "verify": "node --expose-gc scripts/verify-phase5.js",
+    "verify:full": "node --expose-gc scripts/verify-phase5.js --full-scan"
   },
   "keywords": [],
   "author": "",
@@ -13,6 +18,9 @@
   "dependencies": {
     "adm-zip": "^0.5.16",
     "dotenv": "^17.2.3",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.2.1",
+    "express-validator": "^7.3.1",
+    "helmet": "^8.1.0"
   }
 }
