@@ -6,6 +6,8 @@ const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
+const zlib = require('zlib');
 const readline = require('readline');
 
 const app = express();
@@ -428,6 +430,11 @@ if (TRUST_PROXY) {
 app.use(express.json({ limit: '10kb' }));
 app.disable('x-powered-by');
 
+app.use((req, res, next) => {
+  res.locals.cspNonce = crypto.randomBytes(16).toString('base64');
+  next();
+});
+
 const helmetOptions = {
   contentSecurityPolicy: {
     useDefaults: false,
@@ -437,10 +444,11 @@ const helmetOptions = {
       formAction: ["'self'"],
       frameAncestors: ["'none'"],
       objectSrc: ["'none'"],
-      scriptSrc: ["'self'"],
+      scriptSrc: ["'self'", (req, res) => `'nonce-${res.locals.cspNonce}'`],
       styleSrc: ["'self'"],
       imgSrc: ["'self'", 'data:'],
       connectSrc: ["'self'"],
+      manifestSrc: ["'self'"],
       upgradeInsecureRequests: [],
     },
   },
@@ -452,7 +460,118 @@ app.use(
   helmet(helmetOptions)
 );
 
-app.use(express.static(path.join(__dirname, 'public')));
+const publicDir = path.join(__dirname, 'public');
+const indexHtmlPath = path.join(publicDir, 'index.html');
+const notFoundHtmlPath = path.join(publicDir, '404.html');
+
+let cachedIndexHtml = null;
+let cached404Html = null;
+
+function readUtf8Once(absPath, cached) {
+  if (cached) return cached;
+  return fs.readFileSync(absPath, 'utf8');
+}
+
+function originFromRequest(req) {
+  const host = req.get('host');
+  const protocol = req.protocol || 'http';
+  return `${protocol}://${host}`;
+}
+
+function applySeoPlaceholders(html, { origin, canonicalUrl, nonce }) {
+  return String(html)
+    .replaceAll('__ORIGIN__', origin)
+    .replaceAll('__CANONICAL__', canonicalUrl)
+    .replaceAll('__CSP_NONCE__', nonce || '');
+}
+
+function preferredCompression(req) {
+  const header = String(req.headers['accept-encoding'] || '');
+  if (header.includes('br')) return 'br';
+  if (header.includes('gzip')) return 'gzip';
+  return null;
+}
+
+function sendCompressibleUtf8(req, res, { status = 200, body, contentType, cacheControl }) {
+  const text = String(body || '');
+  const encoding = preferredCompression(req);
+  const buf = Buffer.from(text, 'utf8');
+
+  res.setHeader('Content-Type', contentType);
+  if (cacheControl) res.setHeader('Cache-Control', cacheControl);
+
+  if (!encoding || buf.length < 1024) {
+    return res.status(status).send(text);
+  }
+
+  const compressed =
+    encoding === 'br' ? zlib.brotliCompressSync(buf) : zlib.gzipSync(buf, { level: 9 });
+
+  res.setHeader('Content-Encoding', encoding);
+  res.setHeader('Vary', 'Accept-Encoding');
+  return res.status(status).send(compressed);
+}
+
+app.get(['/', '/index.html'], (req, res) => {
+  const origin = originFromRequest(req);
+  const canonicalUrl = `${origin}/`;
+  const nonce = res.locals.cspNonce;
+
+  cachedIndexHtml = readUtf8Once(indexHtmlPath, cachedIndexHtml);
+  const html = applySeoPlaceholders(cachedIndexHtml, { origin, canonicalUrl, nonce });
+
+  return sendCompressibleUtf8(req, res, {
+    status: 200,
+    body: html,
+    contentType: 'text/html; charset=utf-8',
+    cacheControl: 'no-store',
+  });
+});
+
+app.get('/robots.txt', (req, res) => {
+  const origin = originFromRequest(req);
+  const sitemapUrl = `${origin}/sitemap.xml`;
+  const body = `User-agent: *\nAllow: /\nSitemap: ${sitemapUrl}\n`;
+
+  return sendCompressibleUtf8(req, res, {
+    status: 200,
+    body,
+    contentType: 'text/plain; charset=utf-8',
+    cacheControl: 'public, max-age=3600',
+  });
+});
+
+app.get('/sitemap.xml', (req, res) => {
+  const origin = originFromRequest(req);
+  const canonicalUrl = `${origin}/`;
+  const lastmod = new Date().toISOString().slice(0, 10);
+
+  const body =
+    `<?xml version="1.0" encoding="UTF-8"?>\n` +
+    `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+    `  <url>\n` +
+    `    <loc>${canonicalUrl}</loc>\n` +
+    `    <lastmod>${lastmod}</lastmod>\n` +
+    `  </url>\n` +
+    `</urlset>\n`;
+
+  return sendCompressibleUtf8(req, res, {
+    status: 200,
+    body,
+    contentType: 'application/xml; charset=utf-8',
+    cacheControl: 'public, max-age=3600',
+  });
+});
+
+app.use(
+  express.static(publicDir, {
+    index: false,
+    maxAge: IS_PROD ? '1h' : 0,
+    setHeaders(res, filePath) {
+      if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-store');
+    },
+  })
+);
 
 const checkFlightLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -544,7 +663,29 @@ app.post('/check-flight', checkFlightLimiter, requireJson, validateCheckFlight, 
   }
 });
 
+function shouldServeHtml404(req) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return false;
+  if (path.extname(req.path)) return false;
+  return req.accepts(['html', 'json']) === 'html';
+}
+
 app.use((req, res) => {
+  if (shouldServeHtml404(req)) {
+    const origin = originFromRequest(req);
+    const canonicalUrl = `${origin}/`;
+    const nonce = res.locals.cspNonce;
+
+    cached404Html = readUtf8Once(notFoundHtmlPath, cached404Html);
+    const html = applySeoPlaceholders(cached404Html, { origin, canonicalUrl, nonce });
+
+    res.setHeader('X-Robots-Tag', 'noindex');
+    return sendCompressibleUtf8(req, res, {
+      status: 404,
+      body: html,
+      contentType: 'text/html; charset=utf-8',
+      cacheControl: 'no-store',
+    });
+  }
   res.status(404).json({ ok: false, message: MSG_NOT_FOUND });
 });
 
