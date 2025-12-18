@@ -191,22 +191,6 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   animation: spin 0.7s linear infinite;
 }
 
-.hint {
-  margin: 18px 0 0;
-  text-align: center;
-  color: var(--muted2);
-  font-size: 13px;
-}
-
-.hint__code {
-  display: inline-block;
-  padding: 2px 6px;
-  border-radius: 6px;
-  background: #f3f4f6;
-  color: var(--muted);
-  font-weight: 600;
-}
-
 .resultLabel {
   margin: 0 0 16px;
   text-align: center;
@@ -218,21 +202,25 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 }
 
 .flaps {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: baseline;
-  justify-content: center;
-  gap: 10px;
   margin-bottom: 18px;
 }
 
 .flaps__digits {
   display: inline-flex;
   gap: 6px;
+  grid-column: 2;
+  justify-self: center;
 }
 
 .flaps__unit {
   color: var(--muted2);
   font-weight: 700;
+  grid-column: 3;
+  justify-self: start;
+  margin-left: 10px;
 }
 
 .flap {
