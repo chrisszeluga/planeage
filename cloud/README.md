@@ -41,8 +41,6 @@ Use Cloud Scheduler to trigger the Cloud Run Job weekly.
 
 One simple pattern is an authenticated Scheduler HTTP target that calls the Cloud Run Jobs API `:run` endpoint for your job; the Scheduler service account needs permission to run the job.
 
-This repo does not create Scheduler resources automatically as part of Phase 7 task #1/#2; see the Phase 7 tasks for the `gcloud` bootstrap step.
-
 ## Deploy (Buildpacks)
 
 Run `npm run deploy:gcp` (or `cloud/deploy.sh`) after you have `gcloud` authenticated.

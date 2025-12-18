@@ -1,6 +1,8 @@
-# planeage
+# Plane Age
 
-Resolve `Flight #` → `Tail #` → `Mfr Year` → `Aircraft Age`.
+Resolve `Flight #` → `Tail #` → `Mfr Year` → `Aircraft Age`, all in a little simple user interface.
+
+This application was built and deployed in one night using OpenAI Codex (5.2 High) / Claude (for UI Inspiration) / Gemini (for requirement building).
 
 ## Setup
 
